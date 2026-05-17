@@ -1,0 +1,25 @@
+[Unit]
+Description=Grafana to e-ink dashboard bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=grafana-bridge
+Group=grafana-bridge
+EnvironmentFile=/etc/default/grafana-bridge
+WorkingDirectory=/opt/grafana-bridge
+ExecStart=/opt/grafana-bridge/.venv/bin/python -m grafana_bridge
+Restart=on-failure
+RestartSec=5
+StateDirectory=grafana-bridge
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/grafana-bridge
+
+[Install]
+WantedBy=multi-user.target

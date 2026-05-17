@@ -1,0 +1,3 @@
+[submodule "firmware/lib/community-sdk"]
+	path = firmware/lib/community-sdk
+	url = https://github.com/bcrpntr/community-sdk.git

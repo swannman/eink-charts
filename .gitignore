@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store
+bridge/local-config.yaml
+bridge/local.env
+*.bin
+
+firmware/platformio.local.ini
+firmware/src/secrets.h
+firmware/.pio/
+firmware/.vscode/
