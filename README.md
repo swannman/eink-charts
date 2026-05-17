@@ -2,8 +2,7 @@
 
 Custom firmware + bridge service that turns a **Xteink X3** 3.68" e-paper
 display (ESP32-C3, 792×528, 1-bit, SSD1677) into a Grafana Cloud dashboard
-viewer. The device shows one panel at a time and you step through them
-with the physical buttons.
+viewer.
 
 The X3 wakes on a timer (or button press), pulls a pre-rendered bundle of
 chart data over Wi-Fi from a small bridge service on a Raspberry Pi, draws
