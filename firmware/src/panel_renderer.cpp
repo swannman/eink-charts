@@ -215,22 +215,21 @@ void drawStatScreen(uint8_t* fb, const StatEntry* entries, uint32_t n, const cha
     // Target ~2× the chart-title size; value and unit share the same scale
     // so the unit reads as part of the number ("72F" rather than "72 small-F").
     // Shrink the whole group if a long value would overflow the column.
-    auto gapAt = [&](int s) { return u[0] ? (8 * s) : 0; };
     int scale = 2;
     int v_w = fbGfxStringWidthScaled(&FreeSansBold18pt7b, v, scale);
     int u_w = u[0] ? fbGfxStringWidthScaled(&FreeSansBold18pt7b, u, scale) : 0;
-    int total_w = v_w + gapAt(scale) + u_w;
+    int total_w = v_w + u_w;
     while (total_w > col_w - 16 && scale > 1) {
       scale--;
       v_w = fbGfxStringWidthScaled(&FreeSansBold18pt7b, v, scale);
       u_w = u[0] ? fbGfxStringWidthScaled(&FreeSansBold18pt7b, u, scale) : 0;
-      total_w = v_w + gapAt(scale) + u_w;
+      total_w = v_w + u_w;
     }
     const int group_left = cx_center - total_w / 2;
     fbDrawStringGfxScaled(fb, group_left, value_baseline,
                           &FreeSansBold18pt7b, v, scale, true);
     if (u[0]) {
-      fbDrawStringGfxScaled(fb, group_left + v_w + gapAt(scale), value_baseline,
+      fbDrawStringGfxScaled(fb, group_left + v_w, value_baseline,
                             &FreeSansBold18pt7b, u, scale, true);
     }
 
