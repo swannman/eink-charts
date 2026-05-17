@@ -19,7 +19,9 @@ the payload is tiny, and battery life is measured in weeks.
 - Long-press the power button → 2-column scrollable panel list (rocker
   buttons move the cursor)
 - Double-click → cycle time window (24h ↔ 2h ↔ 7d). Per-panel default view
-  is read from Grafana's `timeFrom` override.
+  is read from Grafana's `timeFrom` override. The refresh cadence follows
+  the time window: 2h view refreshes every 5 min, 24h every 15 min, 7d
+  every hour — finer windows want fresher data.
 - Synthetic Battery (V) panel built from BQ27220 fuel-gauge readings the
   device piggy-backs on every fetch
 - Quiet hours (22:00–06:00 local) suppress background Wi-Fi refreshes
