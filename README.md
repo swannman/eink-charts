@@ -1,6 +1,6 @@
 # eink-charts
 
-Custom firmware + bridge service that turns a **Xteink X3** 3.68" e-paper
+Custom firmware + bridge service that turns an Xteink X3 3.68" e-paper
 display (ESP32-C3, 792×528, 1-bit, SSD1677) into a Grafana Cloud dashboard
 viewer.
 
@@ -14,7 +14,7 @@ the payload is tiny, and battery life is measured in weeks.
 
 - Full-screen line charts with title, axes, gridlines, and dotted fill under
   the line
-- Side-by-side **stat panels** with big numbers, units, and sparklines
+- Side-by-side stat panels with big numbers, units, and sparklines
   (auto-grouped from Grafana stat panels that share a row)
 - Long-press the power button → 2-column scrollable panel list (rocker
   buttons move the cursor)
