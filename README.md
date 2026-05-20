@@ -4,11 +4,11 @@ Custom firmware + bridge service that turns an Xteink X3 3.68" e-paper
 display (ESP32-C3, 792×528, 1-bit, SSD1677) into a Grafana Cloud dashboard
 viewer.
 
-The X3 wakes on a timer (or button press), pulls a pre-rendered bundle of
-chart data over Wi-Fi from a small bridge service on a Raspberry Pi, draws
-the charts natively on the EPD, and goes back to deep sleep. Charts render
-in vector form on-device — no PNG decoding, no dithering — so they're crisp,
-the payload is tiny, and battery life is measured in weeks.
+The X3 wakes on a timer (or button press), fetches a pre-rendered bundle
+of chart data over Wi-Fi, draws the charts natively on the EPD, and goes
+back to deep sleep. Charts render in vector form on-device — no PNG
+decoding, no dithering — so they're crisp, the payload is tiny, and
+battery life is measured in weeks.
 
 ## What it looks like
 
@@ -22,52 +22,45 @@ the payload is tiny, and battery life is measured in weeks.
   is read from Grafana's `timeFrom` override. The refresh cadence follows
   the time window: 2h view refreshes every 5 min, 24h every 15 min, 7d
   every hour — finer windows want fresher data.
-- Synthetic Battery (V) panel built from BQ27220 fuel-gauge readings the
-  device piggy-backs on every fetch
 - Quiet hours (22:00–06:00 local) suppress background Wi-Fi refreshes
 
-## Architecture
+## Two architectures
 
-```
-Grafana Cloud  →  bridge service  →  X3 firmware  →  EPD
- (PromQL)        (binary bundle)    (deep sleep    (SSD1677)
-                                     + button wake)
-```
+There are two complete implementations in this repo. They share the bundle
+format and rendering, but the data path is different. Pick whichever fits
+how you want to use the display.
 
-- **bridge/** — FastAPI service (Python 3.13) on the Raspberry Pi. Runs
-  PromQL queries against Grafana Cloud for each panel × time window (24h,
-  2h, 7d), validates them, packs them into a single compact binary "bundle"
-  cached in memory, serves it at `GET /data/all`. Refreshes every 4 min.
-- **firmware/** — PlatformIO/Arduino project for the ESP32-C3. Wakes,
-  fetches the bundle into NVS, renders the current panel using a tiny
-  in-house GFX layer, sleeps. Stays awake only for the long-press list UI.
+| | **Legacy (local)** | **Cloud (anywhere)** |
+|---|---|---|
+| Data path | X3 ← home WiFi ← Pi bridge | X3 ← any WiFi ← Cloudflare Worker ← Pi push |
+| Works away from home | No | Yes — including phone hotspot |
+| Inbound exposure on home net | Port 8080 to the Pi | None (push-only outbound) |
+| Encryption | None (LAN) | X25519 + AES-256-GCM end-to-end |
+| Multi-WiFi support | No | Yes, with per-network refresh floors |
+| Firmware | [`firmware/`](firmware/README.md) | [`firmware-cloud/`](firmware-cloud/README.md) |
+| Server | [`bridge/`](bridge/README.md) | [`bridge-cloud/`](bridge-cloud/README.md) + [`worker/`](worker/README.md) |
 
-Bundle format is documented inline in `bridge/src/grafana_bridge/data.py`
-and parsed in `firmware/src/main.cpp` — versioned (currently v4) so the
-firmware fails gracefully when the bridge ships a new schema.
+Each subdirectory has its own README with build, deploy, and protocol
+details. The two architectures are mutually exclusive on a given Pi
+(both want to query Grafana on overlapping schedules); installing one
+disables the other.
 
-## Building the firmware
+## Subdirectories
 
-```sh
-cp firmware/platformio.local.ini.example firmware/platformio.local.ini
-# fill in WiFi SSID/password and bridge URL
-cd firmware
-pio run -t upload
-```
-
-The X3's USB Serial JTAG is finicky during deep sleep, so the easiest flash
-flow is: hold the BOOT button while replugging USB, then `pio run -t upload`.
-
-## Deploying the bridge
-
-```sh
-cp bridge/deploy/config.yaml.example /etc/grafana-bridge/config.yaml
-cp bridge/deploy/grafana-bridge.env.example /etc/default/grafana-bridge
-# fill in GRAFANA_TOKEN, dashboard UIDs, panel IDs
-sudo bridge/deploy/install.sh
-```
-
-Runs as a dedicated `grafana-bridge` systemd user.
+- **[`firmware/`](firmware/README.md)** — ESP32-C3 firmware for the X3 that
+  fetches from a local Pi bridge. Pair with `bridge/`.
+- **[`firmware-cloud/`](firmware-cloud/README.md)** — ESP32-C3 firmware that
+  fetches encrypted bundles from a Cloudflare Worker. Multi-WiFi-aware,
+  first-boot QR-code enrollment, public-key crypto. Pair with `bridge-cloud/`
+  + `worker/`.
+- **[`bridge/`](bridge/README.md)** — original FastAPI service. Runs on
+  the Pi, serves the bundle at `GET /data/all` on port 8080.
+- **[`bridge-cloud/`](bridge-cloud/README.md)** — push-only service. Builds
+  the same bundle in-process, X25519-seals it for the X3, uploads to the
+  Cloudflare Worker every 4 minutes via systemd timer.
+- **[`worker/`](worker/README.md)** — Cloudflare Worker (TypeScript) that
+  proxies the encrypted bundle between R2 storage and clients. Auth via
+  bearer token; never sees plaintext.
 
 ## References
 
@@ -110,7 +103,10 @@ research material only.
 - The QMI8658 INT pin is not connected to a GPIO on this board (verified
   across three independent firmware codebases). Wake-on-motion via the
   IMU is not possible without a PCB mod; we use timer + power-button wake.
-- Battery: BQ27220 fuel gauge over I²C. Voltage at register `0x08`.
+- Battery: BQ27220 fuel gauge over I²C. Voltage at register `0x08`. The
+  cloud variant doesn't currently use this (no telemetry channel back to
+  the Pi); the local variant piggybacks it on every fetch for a synthetic
+  battery panel.
 
 ## License
 

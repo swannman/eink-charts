@@ -1,0 +1,21 @@
+[Unit]
+Description=Push encrypted dashboard bundle to Cloudflare Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=grafana-push
+Group=grafana-push
+# GRAFANA_TOKEN + GRAFANA_BRIDGE_CONFIG come from the legacy env file (kept
+# in place since the bridge config.yaml already lives at the matching path).
+# WORKER_BEARER_TOKEN + X3_PUBKEY_B64 come from the push-specific env file.
+EnvironmentFile=/etc/default/grafana-bridge
+EnvironmentFile=-/etc/default/grafana-push
+WorkingDirectory=/opt/grafana-push
+ExecStart=/opt/grafana-push/.venv/bin/python -m grafana_push
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

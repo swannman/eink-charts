@@ -1,0 +1,19 @@
+name = "einkcharts-dashboard"
+main = "src/index.js"
+compatibility_date = "2025-12-01"
+
+[[r2_buckets]]
+binding = "BUNDLE"
+bucket_name = "einkcharts-bundle"
+
+[vars]
+MAX_BUNDLE_BYTES = "65536"
+
+# BEARER_TOKEN is a secret, set via:
+#   wrangler secret put BEARER_TOKEN
+# or via the API during deploy (see deploy.sh).
+
+[[routes]]
+pattern = "dashboard.contexa.net/*"
+zone_name = "contexa.net"
+custom_domain = true

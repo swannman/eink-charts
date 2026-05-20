@@ -1,0 +1,14 @@
+[Unit]
+Description=Push encrypted dashboard bundle every 4 minutes
+
+[Timer]
+# Fire shortly after boot so we publish a current bundle without waiting
+# the full interval, then every 4 min on the wall clock.
+OnBootSec=1min
+OnUnitActiveSec=4min
+AccuracySec=15s
+Persistent=true
+Unit=grafana-push.service
+
+[Install]
+WantedBy=timers.target

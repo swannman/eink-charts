@@ -14,3 +14,8 @@ firmware/platformio.local.ini
 firmware/src/secrets.h
 firmware/.pio/
 firmware/.vscode/
+
+firmware-cloud/platformio.local.ini
+firmware-cloud/src/secrets.h
+firmware-cloud/.pio/
+firmware-cloud/.vscode/
