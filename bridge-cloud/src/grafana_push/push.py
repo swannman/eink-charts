@@ -111,23 +111,74 @@ def b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 
-async def _build_bundle_async(config_path: Path, token: str) -> tuple[bytes, str]:
+async def _build_bundle_async(
+    config_path: Path,
+    token: str,
+    battery_history: list[tuple[float, int]],
+) -> tuple[bytes, str]:
     """Run one bundle render against Grafana and return (body, etag).
     Mirrors what the legacy FastAPI bridge did on its background timer,
-    but synchronous to the caller — no long-running process needed."""
+    but synchronous to the caller — no long-running process needed.
+
+    `battery_history` is a list of (epoch_seconds, millivolts) tuples
+    pulled from the Worker; we feed it into the scheduler so the
+    synthetic battery panel renders the same way it always has.
+    """
     config = load_config(config_path)
     store = FrameStore()
     scheduler = Scheduler(config, token, store)
+    for ts, mv in battery_history:
+        scheduler.battery_history.append((float(ts), int(mv)))
     async with httpx.AsyncClient() as client:
-        # render_bundle_once() resolves panels then queries Grafana for the
-        # 24h/2h/7d views of each. Without battery telemetry the synthetic
-        # battery panel will be empty — that's expected post-listener.
         ok = await scheduler.render_bundle_once(client)
     if not ok or store.bundle_body is None:
         raise RuntimeError(
             f"bundle render failed (last_error={store.last_error or 'unknown'})"
         )
     return store.bundle_body, store.bundle_etag
+
+
+def _fetch_battery_history(worker_url: str, bearer: str) -> list[tuple[float, int]]:
+    """GET /battery alongside the bundle URL. Returns an empty list on any
+    error (the bundle build still succeeds; the battery panel will just be
+    empty for this cycle)."""
+    if not worker_url or not bearer:
+        return []
+    # /bundle → /battery on the same host.
+    if worker_url.rstrip("/").endswith("/bundle"):
+        battery_url = worker_url.rstrip("/")[: -len("/bundle")] + "/battery"
+    else:
+        battery_url = worker_url.rstrip("/") + "/battery"
+
+    req = urllib.request.Request(
+        battery_url,
+        headers={"Authorization": f"Bearer {bearer}", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                log.warning("battery fetch: HTTP %d", resp.status)
+                return []
+            body = resp.read()
+    except (urllib.error.URLError, RuntimeError) as e:
+        log.warning("battery fetch failed: %s", e)
+        return []
+
+    import json
+    try:
+        entries = json.loads(body)
+    except Exception as e:
+        log.warning("battery fetch: bad JSON: %s", e)
+        return []
+    if not isinstance(entries, list):
+        return []
+    out: list[tuple[float, int]] = []
+    for e in entries:
+        try:
+            out.append((float(e["ts"]), int(e["mv"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 def _push_to_worker(worker_url: str, bearer: str, sealed: bytes) -> None:
@@ -183,9 +234,19 @@ def main() -> int:
         log.error("X3_PUBKEY_B64 must decode to 32 bytes (got %d)", len(recipient_pk))
         return 2
 
+    # Pull rolling battery history from the Worker first so the bundle
+    # builder can synthesize the same battery panel the legacy bridge did.
+    battery_history = _fetch_battery_history(worker_url, bearer)
+    if battery_history:
+        log.info("battery history: %d readings (oldest=%.0f, newest=%.0f)",
+                 len(battery_history),
+                 battery_history[0][0], battery_history[-1][0])
+
     t0 = time.monotonic()
     try:
-        plaintext, bundle_etag = asyncio.run(_build_bundle_async(config_path, token))
+        plaintext, bundle_etag = asyncio.run(
+            _build_bundle_async(config_path, token, battery_history)
+        )
     except Exception as e:
         log.error("bundle render failed: %s", e)
         return 1
