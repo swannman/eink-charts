@@ -712,6 +712,39 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   return true;
 }
 
+// Best-effort: post the current BQ27220 voltage to the Worker so the Pi
+// can read it back and synthesize a battery panel into the next bundle.
+// Failure here doesn't fail the cycle — the X3 doesn't need the response.
+static void postBatteryReadingToWorker(const String& workerUrl,
+                                       const String& bearer,
+                                       uint16_t batteryMv) {
+  if (workerUrl.length() == 0 || bearer.length() == 0 || batteryMv == 0) return;
+
+  // Derive battery URL from the bundle URL: replace the trailing /bundle
+  // with /battery so the operator only has to configure one base URL.
+  String batteryUrl = workerUrl;
+  int slash = batteryUrl.lastIndexOf('/');
+  if (slash >= 0) batteryUrl = batteryUrl.substring(0, slash) + "/battery";
+
+  WiFiClientSecure secure;
+  secure.setInsecure();
+  HTTPClient http;
+  http.setTimeout(10000);
+  if (!http.begin(secure, batteryUrl)) {
+    Serial.println("battery: http begin failed");
+    return;
+  }
+  http.addHeader("Authorization", "Bearer " + bearer);
+  http.addHeader("Content-Type", "application/json");
+  http.setUserAgent("einkcharts-x3/1");
+
+  char body[32];
+  snprintf(body, sizeof(body), "{\"mv\":%u}", (unsigned)batteryMv);
+  int code = http.PUT((uint8_t*)body, strlen(body));
+  Serial.printf("battery: PUT %s body=%s -> %d\n", batteryUrl.c_str(), body, code);
+  http.end();
+}
+
 // Read the per-panel default view byte from the cached bundle (v3+ layout).
 // Returns VIEW_24H if cache is empty or panel doesn't have an override.
 // Note: Preferences.getBytes() refuses partial reads — if maxLen < blob size
@@ -1239,6 +1272,9 @@ void setup() {
         fetchOk = fetchAndCacheBundleFromWorker(workerUrl, workerBearer, x3_sk, x3_pk);
         if (fetchOk) {
           rtcLastFetchEpoch = time(nullptr);
+          // Piggyback battery telemetry while WiFi is still up.
+          uint16_t batteryMv = readBatteryMv();
+          postBatteryReadingToWorker(workerUrl, workerBearer, batteryMv);
         }
       } else {
         Serial.printf("wifi: '%s' floor not met (%llds < %us); skipping fetch this cycle\n",
