@@ -24,8 +24,30 @@ access — home, phone hotspot, friend's WiFi.
   the device renders the enrollment QR for 30 s (skippable by pressing
   power) so you can re-scan or re-copy the pubkey without wiping the
   keystore.
+- **Device Logs panel** (long-press list only): an RTC-backed ring buffer
+  mirrors every `Log.printf` output across deep-sleep cycles, rendered as
+  a scrollable on-screen log. See [Device Logs](#device-logs) below.
+- **Proportional fonts** (Adafruit GFX FreeSans / FreeSansBold) for the
+  connecting splash, enrollment QR screen, panel titles, and logs. The
+  fixed-width 5x7 face is reserved for chart axis labels.
 - **Removed**: the local `/advance` POST and the `bridge_url` NVS key —
   neither applies to the cloud flow.
+
+## Controls
+
+- **Short-press POWER** → next panel (forward through the bundle's panels,
+  wrapping at the end; never lands on the logs screen).
+- **Double-click POWER** (≤250 ms between releases) → cycle the time
+  window: 24h ↔ 2h ↔ 7d.
+- **Long-press POWER** (≥800 ms) → enter the 2-column panel list. Use
+  the rocker buttons to move the cursor, POWER to select, 30 s of
+  inactivity auto-selects. The list ends with a synthesized **Device
+  Logs** entry.
+- **On the Device Logs screen**: lower rocker (BACK or OK) pages back to
+  older logs; upper rocker (UP or DOWN) pages forward to newer; each
+  press scrolls ~1/3 of the visible window so 2/3 of the prior content
+  stays on screen. POWER exits to deep sleep (position preserved). 30 s
+  of inactivity also exits.
 
 ## First-boot enrollment flow
 
@@ -89,6 +111,22 @@ Wake cadence follows the current view mode: 5 min for 2h zoom, 15 min for
 The "wake even on phone to check for home" behavior costs a few seconds
 of radio per cycle but means you don't have to wait a stale 1 h sleep
 to detect home WiFi coming back.
+
+## Device Logs
+
+A 4 KB ring buffer in RTC slow memory captures every `Log.printf` output
+(the same lines that go out the USB serial port). Survives deep sleep
+between wakes; lost on a full power-cycle — exactly the scope you want
+for "what's happened since the device last cold-booted."
+
+Reached via long-press → bottom of the list → "Device Logs". Interactive:
+- Lower rocker → page back (older).
+- Upper rocker → page forward (newer).
+- POWER → exit, deep sleep, scroll position preserved.
+
+Useful for diagnosing issues away from a serial monitor — e.g., did the
+X3 actually fall back to phone hotspot, did the fetch decrypt cleanly,
+how long did the cycle take.
 
 ## Battery telemetry
 
@@ -174,11 +212,12 @@ src/
 ├── x25519_keystore.{h,cpp}   # mbedTLS keygen + NVS persistence + b64url
 ├── enroll_screen.{h,cpp}     # first-boot QR + visible-text screen
 ├── wifi_config.{h,cpp}       # multi-network loader + connect_any()
-├── panel_model.h             # PanelData / StatEntry (shared shape)
-├── panel_renderer.cpp        # drawPanel / drawStatScreen / drawListView
-├── gfx_lite.{h,cpp}          # 1-bit framebuffer + fonts
+├── log_buffer.{h,cpp}        # RTC ring buffer + MirrorPrint subclass
+├── panel_model.h             # PanelData / StatEntry / drawLogsScreen
+├── panel_renderer.cpp        # drawPanel / drawStatScreen / drawListView / drawLogsScreen
+├── gfx_lite.{h,cpp}          # 1-bit framebuffer + 5x7 + Adafruit GFX
 ├── demo_panel_data.h         # DEMO_MODE stub panels
-├── font5x7.h                 # bitmap font (BSD)
+├── font5x7.h                 # bitmap font, used only for chart axis labels
 └── imu.{h,cpp}               # QMI8658 probe (log-only)
 ```
 
