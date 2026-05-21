@@ -104,9 +104,11 @@ research material only.
   across three independent firmware codebases). Wake-on-motion via the
   IMU is not possible without a PCB mod; we use timer + power-button wake.
 - Battery: BQ27220 fuel gauge over I²C. Voltage at register `0x08`. The
-  cloud variant doesn't currently use this (no telemetry channel back to
-  the Pi); the local variant piggybacks it on every fetch for a synthetic
-  battery panel.
+  local variant piggybacks the reading on every fetch via an
+  `X-Battery-MV` header; the cloud variant uses a separate `/battery`
+  Worker endpoint that the X3 PUTs to after each successful bundle fetch
+  (Pi reads it back to synthesize the same panel). Both produce a
+  synthetic Battery (V) panel.
 
 ## License
 

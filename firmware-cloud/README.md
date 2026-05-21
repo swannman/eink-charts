@@ -16,8 +16,16 @@ access — home, phone hotspot, friend's WiFi.
   own minimum refresh interval (e.g. 5 min on home, 1 h on phone).
 - **First-boot enrollment** screen rendering a QR code of the device's
   X25519 public key so you can paste it into the Pi push config.
-- **Removed**: the local `/advance` POST, the X-Battery-MV header path,
-  and the `bridge_url` NVS key — none apply to the cloud flow.
+- **Battery telemetry over a separate Worker endpoint**: after each
+  successful fetch, the X3 PUTs the BQ27220 voltage to `/battery` so the
+  Pi can read it back and synthesize the same battery panel the legacy
+  bridge did. See [Battery telemetry](#battery-telemetry) below.
+- **Post-flash QR re-display**: on first boot after every firmware flash,
+  the device renders the enrollment QR for 30 s (skippable by pressing
+  power) so you can re-scan or re-copy the pubkey without wiping the
+  keystore.
+- **Removed**: the local `/advance` POST and the `bridge_url` NVS key —
+  neither applies to the cloud flow.
 
 ## First-boot enrollment flow
 
@@ -81,6 +89,17 @@ Wake cadence follows the current view mode: 5 min for 2h zoom, 15 min for
 The "wake even on phone to check for home" behavior costs a few seconds
 of radio per cycle but means you don't have to wait a stale 1 h sleep
 to detect home WiFi coming back.
+
+## Battery telemetry
+
+After each successful bundle fetch (while WiFi is still up), the firmware
+reads the BQ27220 voltage and PUTs `{"mv": <reading>}` to
+`https://dashboard.contexa.net/battery` with the same bearer token. The
+Worker appends to a rolling 7-day JSON history in R2; the Pi reads that
+history before each push and seeds it into the bundle so the
+synthetic **Battery (V)** panel renders identically to the legacy
+firmware. The PUT is best-effort — if it fails (network blip, Worker
+hiccup) the bundle cycle still succeeds; we just miss one data point.
 
 ## Decryption (`src/bundle_seal.cpp`)
 

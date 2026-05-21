@@ -1,16 +1,33 @@
 # einkcharts-dashboard Worker
 
 Cloudflare Worker that ferries encrypted dashboard bundles from the Pi
-(push) to the X3 (pull). Bound to R2 bucket `einkcharts-bundle`.
+(push) to the X3 (pull), plus a tiny battery-telemetry side channel back
+from the X3. Bound to R2 bucket `einkcharts-bundle`.
 
 ## Endpoints
 
-- `PUT /bundle` — Pi pushes a sealed bundle. Bearer-token-gated.
-- `GET /bundle` — X3 fetches the latest bundle. Supports `If-None-Match`
-  for 304s. Bearer-token-gated.
+**`/bundle`** — the main payload.
 
-Payload is X25519+ChaCha20-Poly1305 sealed by the Pi before upload; the
-Worker only sees ciphertext.
+- `PUT /bundle` — Pi pushes a sealed bundle (binary).
+- `GET /bundle` — X3 fetches the latest bundle. Supports `If-None-Match`
+  for 304s.
+
+The bundle body is X25519 + AES-256-GCM sealed by the Pi before upload;
+the Worker only sees ciphertext, never holds the X3's private key, and
+can't decrypt.
+
+**`/battery`** — small JSON telemetry channel.
+
+- `PUT /battery` — X3 posts `{"mv": <int>}` after each successful bundle
+  fetch. The Worker appends `{ts, mv}` to a JSON array stored at R2 key
+  `battery_history` and prunes entries older than 7 days.
+- `GET /battery` — Pi reads the array before each bundle build and seeds
+  it into the synthetic battery panel. Returns `[]` if empty.
+
+Battery readings are plaintext voltages (no privacy concern) but still
+bearer-token-gated to keep randos out.
+
+All endpoints require `Authorization: Bearer <BEARER_TOKEN>`.
 
 ## Deploy
 
@@ -58,4 +75,9 @@ curl -i -H "Authorization: Bearer $BEARER" https://dashboard.contexa.net/bundle
 # upload + read back
 echo -n "test" | curl -X PUT -H "Authorization: Bearer $BEARER" --data-binary @- https://dashboard.contexa.net/bundle
 curl -i -H "Authorization: Bearer $BEARER" https://dashboard.contexa.net/bundle
+
+# battery telemetry
+curl -X PUT -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' \
+     -d '{"mv":4123}' https://dashboard.contexa.net/battery
+curl -i -H "Authorization: Bearer $BEARER" https://dashboard.contexa.net/battery
 ```

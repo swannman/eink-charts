@@ -64,9 +64,9 @@ voltage as `X-Battery-MV` header. The bridge accumulates a 24 h history
 and synthesizes a battery-voltage panel that shows up alongside the real
 ones.
 
-This is one of the things the cloud variant doesn't currently do — there's
-no return channel from the X3 to the Pi when traffic flows
-X3 ← Worker ← Pi.
+The cloud variant solves the same problem with a separate Worker
+endpoint (`PUT /battery`) — see [`../firmware-cloud/`](../firmware-cloud/README.md)
+and [`../bridge-cloud/`](../bridge-cloud/README.md).
 
 ## Memory + flash
 

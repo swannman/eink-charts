@@ -24,15 +24,19 @@ on.
 
 A systemd timer (`grafana-push.timer`) fires the service every 4 minutes:
 
-1. **Build the bundle in-process** via the same `Scheduler.render_bundle_once()`
+1. **Pull battery history** from the Worker's `/battery` endpoint — the
+   X3 PUTs its BQ27220 voltage there after every fetch, and the Worker
+   keeps a rolling 7 days. Empty list on the first run is fine.
+2. **Build the bundle in-process** via the same `Scheduler.render_bundle_once()`
    code path as the legacy bridge — queries Grafana for each panel × view
-   window, validates, encodes.
-2. **Seal** the bundle for the X3 using a fresh ephemeral X25519 keypair
+   window, validates, encodes. Seeds `scheduler.battery_history` with the
+   list from step 1 so the synthetic Battery (V) panel renders.
+3. **Seal** the bundle for the X3 using a fresh ephemeral X25519 keypair
    per push (forward secrecy):
    - `shared = X25519(ephemeral_sk, x3_pk)`
    - `key = HKDF-SHA256(shared, salt=epk||x3_pk, info="EInkCharts seal v1")`
    - `ciphertext, tag = AES-256-GCM(key, nonce, plaintext)`
-3. **PUT** the sealed blob (`epk || nonce || ciphertext || tag`, 60-byte
+4. **PUT** the sealed blob (`epk || nonce || ciphertext || tag`, 60-byte
    overhead) to `https://dashboard.contexa.net/bundle` with the bearer
    token from `/etc/default/grafana-push`.
 
