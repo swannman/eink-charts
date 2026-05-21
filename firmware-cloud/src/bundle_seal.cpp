@@ -9,6 +9,7 @@
 #include <mbedtls/gcm.h>
 #include <mbedtls/hkdf.h>
 #include <mbedtls/md.h>
+#include "log_buffer.h"
 
 namespace bundle_seal {
 
@@ -73,7 +74,7 @@ static bool x25519_ecdh(const uint8_t sk[32], const uint8_t peer_pk[32],
   } while (0);
 
   if (!ok) {
-    Serial.printf("bundle_seal: x25519 ecdh err=-0x%04x\n", -ret);
+    Log.printf("bundle_seal: x25519 ecdh err=-0x%04x\n", -ret);
   }
 
   mbedtls_ecp_point_free(&shared_point);
@@ -89,12 +90,12 @@ int unseal(const uint8_t sk[32], const uint8_t pk[32],
            const uint8_t* sealed, size_t sealed_len,
            uint8_t* out_buf, size_t out_cap) {
   if (sealed_len < OVERHEAD_BYTES) {
-    Serial.println("bundle_seal: sealed too short");
+    Log.println("bundle_seal: sealed too short");
     return -1;
   }
   const size_t ct_len = sealed_len - OVERHEAD_BYTES;
   if (ct_len > out_cap) {
-    Serial.printf("bundle_seal: out_cap=%u < needed=%u\n",
+    Log.printf("bundle_seal: out_cap=%u < needed=%u\n",
                   (unsigned)out_cap, (unsigned)ct_len);
     return -1;
   }
@@ -116,14 +117,14 @@ int unseal(const uint8_t sk[32], const uint8_t pk[32],
   uint8_t key[32];
   const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   if (md == nullptr) {
-    Serial.println("bundle_seal: SHA256 md_info missing");
+    Log.println("bundle_seal: SHA256 md_info missing");
     return -1;
   }
   int ret = mbedtls_hkdf(md, salt, sizeof(salt), shared, sizeof(shared),
                          (const uint8_t*)INFO_STR, sizeof(INFO_STR) - 1,
                          key, sizeof(key));
   if (ret != 0) {
-    Serial.printf("bundle_seal: hkdf err=-0x%04x\n", -ret);
+    Log.printf("bundle_seal: hkdf err=-0x%04x\n", -ret);
     return -1;
   }
 
@@ -147,7 +148,7 @@ int unseal(const uint8_t sk[32], const uint8_t pk[32],
     // Most common failure: tag mismatch. Could be wrong key (Pi has a
     // different X3_PUBKEY_B64 than this device), wrong INFO_STR, or
     // tampered ciphertext.
-    Serial.printf("bundle_seal: gcm_decrypt err=-0x%04x\n", -ret);
+    Log.printf("bundle_seal: gcm_decrypt err=-0x%04x\n", -ret);
     return -1;
   }
   return (int)ct_len;

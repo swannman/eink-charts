@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "config.h"
+#include "log_buffer.h"
 
 namespace wifi_config {
 
@@ -85,13 +86,23 @@ std::vector<Network> load() {
     appendCompileTimeDefaults(nets);
   }
 
+  // Log the resolved list so the device-logs screen shows which networks
+  // were even candidates this boot. Helpful when debugging "did it try
+  // my phone hotspot?" away from home.
+  Log.printf("wifi_config: %u network(s) configured:\n", (unsigned)nets.size());
+  for (size_t i = 0; i < nets.size(); i++) {
+    Log.printf("  [%u] ssid='%s' floor=%us\n",
+               (unsigned)i, nets[i].ssid.c_str(),
+               (unsigned)nets[i].min_refresh_sec);
+  }
+
   return nets;
 }
 
 ConnectResult connect_any(const std::vector<Network>& nets,
                           uint32_t per_net_timeout_ms) {
   if (nets.empty()) {
-    Serial.println("wifi: no networks configured");
+    Log.println("wifi: no networks configured");
     return {false, -1, String(), 0};
   }
 
@@ -101,7 +112,7 @@ ConnectResult connect_any(const std::vector<Network>& nets,
   for (size_t i = 0; i < nets.size(); i++) {
     const Network& net = nets[i];
     if (net.ssid.length() == 0) continue;
-    Serial.printf("wifi: try %u/%u ssid='%s' (floor=%us)\n",
+    Log.printf("wifi: try %u/%u ssid='%s' (floor=%us)\n",
                   (unsigned)(i + 1), (unsigned)nets.size(),
                   net.ssid.c_str(), (unsigned)net.min_refresh_sec);
     WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/true);
@@ -112,15 +123,17 @@ ConnectResult connect_any(const std::vector<Network>& nets,
       delay(200);
     }
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("wifi: connected to '%s' ip=%s rssi=%d\n",
+      Log.printf("wifi: connected to '%s' ip=%s rssi=%d\n",
                     net.ssid.c_str(),
                     WiFi.localIP().toString().c_str(), WiFi.RSSI());
       return {true, (int)i, net.ssid, net.min_refresh_sec};
     }
-    Serial.printf("wifi: '%s' timeout after %ums\n",
+    Log.printf("wifi: '%s' timeout after %ums\n",
                   net.ssid.c_str(), (unsigned)per_net_timeout_ms);
   }
 
+  Log.printf("wifi: ALL %u network(s) failed — no fetch this cycle\n",
+             (unsigned)nets.size());
   return {false, -1, String(), 0};
 }
 

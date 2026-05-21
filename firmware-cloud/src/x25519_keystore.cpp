@@ -7,6 +7,7 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
+#include "log_buffer.h"
 
 namespace x25519_keystore {
 
@@ -51,32 +52,32 @@ bool generate_and_store(uint8_t sk_out[KEY_LEN], uint8_t pk_out[KEY_LEN]) {
     static const char pers[] = "x3-x25519-keygen";
     ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                 (const uint8_t*)pers, sizeof(pers) - 1);
-    if (ret != 0) { Serial.printf("keystore: ctr_drbg_seed err=-0x%04x\n", -ret); break; }
+    if (ret != 0) { Log.printf("keystore: ctr_drbg_seed err=-0x%04x\n", -ret); break; }
 
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
-    if (ret != 0) { Serial.printf("keystore: group_load err=-0x%04x\n", -ret); break; }
+    if (ret != 0) { Log.printf("keystore: group_load err=-0x%04x\n", -ret); break; }
 
     ret = mbedtls_ecp_gen_keypair(&grp, &sk_mpi, &pk_point,
                                   mbedtls_ctr_drbg_random, &ctr_drbg);
-    if (ret != 0) { Serial.printf("keystore: gen_keypair err=-0x%04x\n", -ret); break; }
+    if (ret != 0) { Log.printf("keystore: gen_keypair err=-0x%04x\n", -ret); break; }
 
     // Curve25519 stores the scalar in little-endian; X25519's "public key" is
     // the X coordinate, also little-endian.
     ret = mbedtls_mpi_write_binary_le(&sk_mpi, sk_out, KEY_LEN);
-    if (ret != 0) { Serial.printf("keystore: write sk err=-0x%04x\n", -ret); break; }
+    if (ret != 0) { Log.printf("keystore: write sk err=-0x%04x\n", -ret); break; }
 
     size_t pk_olen = 0;
     ret = mbedtls_ecp_point_write_binary(&grp, &pk_point,
                                          MBEDTLS_ECP_PF_UNCOMPRESSED,
                                          &pk_olen, pk_out, KEY_LEN);
     if (ret != 0 || pk_olen != KEY_LEN) {
-      Serial.printf("keystore: write pk err=-0x%04x olen=%u\n", -ret, (unsigned)pk_olen);
+      Log.printf("keystore: write pk err=-0x%04x olen=%u\n", -ret, (unsigned)pk_olen);
       break;
     }
 
     Preferences p;
     if (!p.begin(NS, /*readOnly=*/false)) {
-      Serial.println("keystore: NVS open failed");
+      Log.println("keystore: NVS open failed");
       break;
     }
     // Drop any prior pair first so a partial write doesn't leave inconsistent
@@ -87,7 +88,7 @@ bool generate_and_store(uint8_t sk_out[KEY_LEN], uint8_t pk_out[KEY_LEN]) {
     size_t w_pk = p.putBytes(K_PK, pk_out, KEY_LEN);
     p.end();
     if (w_sk != KEY_LEN || w_pk != KEY_LEN) {
-      Serial.printf("keystore: NVS write failed sk=%u pk=%u\n",
+      Log.printf("keystore: NVS write failed sk=%u pk=%u\n",
                     (unsigned)w_sk, (unsigned)w_pk);
       break;
     }

@@ -4,6 +4,7 @@
 #include <Wire.h>
 
 #include "config.h"
+#include "log_buffer.h"
 
 namespace {
 
@@ -34,7 +35,7 @@ bool imuInit() {
     uint8_t who = 0;
     if (readReg(a, QMI_REG_WHO_AM_I, &who, 1) && who == 0x05) {
       g_addr = a;
-      Serial.printf("imu: QMI8658 found at 0x%02x (WHO_AM_I=0x%02x)\n", a, who);
+      Log.printf("imu: QMI8658 found at 0x%02x (WHO_AM_I=0x%02x)\n", a, who);
       // CTRL1 = 0x40: ADDR_AI=1 (auto-increment on multi-byte reads). Without
       // this, a 6-byte burst from AX_L just returns AX_L six times.
       writeReg(a, 0x02, 0x40);
@@ -46,7 +47,7 @@ bool imuInit() {
       delay(5);
       return true;
     }
-    Serial.printf("imu: no QMI8658 at 0x%02x (read=0x%02x)\n", a, who);
+    Log.printf("imu: no QMI8658 at 0x%02x (read=0x%02x)\n", a, who);
   }
   return false;
 }

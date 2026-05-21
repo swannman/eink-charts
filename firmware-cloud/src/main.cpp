@@ -22,6 +22,7 @@
 #include "panel_model.h"
 #include "wifi_config.h"
 #include "x25519_keystore.h"
+#include "log_buffer.h"
 
 EInkDisplay display(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY);
 
@@ -58,9 +59,13 @@ static const char* viewLabel(uint8_t m) {
 // Persisted across deep sleep via the RTC clock. After the first NTP sync we
 // can compute "seconds since last successful WiFi fetch" without reconnecting.
 RTC_DATA_ATTR static time_t rtcLastFetchEpoch = 0;
-// Current panel index — wraps modulo rtcPanelTotal.
+// Current panel index — wraps modulo rtcPanelTotal for forward-press
+// navigation. The sentinel LOGS_PANEL_IDX means "show the device-logs
+// screen instead of a bundle panel"; only reachable via the long-press
+// list, never via forward-press cycling.
 RTC_DATA_ATTR static uint32_t rtcPanelIdx = 0;
 RTC_DATA_ATTR static uint32_t rtcPanelTotal = 0;
+constexpr uint32_t LOGS_PANEL_IDX = 0xFFFFFFFFu;
 // Refresh cadence — finer time windows want fresher data. 7d barely moves
 // hour-to-hour; 2h zoom is for actively watching a trend.
 constexpr uint64_t REFRESH_INTERVAL_2H_SECONDS  =  5 * 60;
@@ -223,7 +228,7 @@ static void deepSleep(uint64_t timerSeconds) {
   }
   // Debounce the released signal briefly.
   delay(BUTTON_DEBOUNCE_MS);
-  Serial.printf("deep sleep (timer=%llus, also wake on power button)\n",
+  Log.printf("deep sleep (timer=%llus, also wake on power button)\n",
                 (unsigned long long)timerSeconds);
   Serial.flush();
 
@@ -282,10 +287,10 @@ static NavAction readPressPattern() {
 
 static bool connectWifi(const String& ssid, const String& password) {
   if (ssid.isEmpty()) {
-    Serial.println("no SSID configured; skipping wifi");
+    Log.println("no SSID configured; skipping wifi");
     return false;
   }
-  Serial.printf("wifi: connecting to '%s'\n", ssid.c_str());
+  Log.printf("wifi: connecting to '%s'\n", ssid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -294,10 +299,10 @@ static bool connectWifi(const String& ssid, const String& password) {
     delay(200);
   }
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("wifi: timeout");
+    Log.println("wifi: timeout");
     return false;
   }
-  Serial.printf("wifi: connected, ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  Log.printf("wifi: connected, ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   return true;
 }
 
@@ -591,7 +596,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
                                           const uint8_t x3_sk[32],
                                           const uint8_t x3_pk[32]) {
   if (workerUrl.length() == 0 || bearer.length() == 0) {
-    Serial.println("worker: URL or bearer not configured; skipping fetch");
+    Log.println("worker: URL or bearer not configured; skipping fetch");
     return false;
   }
 
@@ -600,7 +605,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(secure, workerUrl)) {
-    Serial.println("worker: http begin failed");
+    Log.println("worker: http begin failed");
     return false;
   }
   http.addHeader("Authorization", "Bearer " + bearer);
@@ -610,7 +615,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   http.collectHeaders(collect, 2);
 
   int code = http.GET();
-  Serial.printf("worker: GET %s -> %d\n", workerUrl.c_str(), code);
+  Log.printf("worker: GET %s -> %d\n", workerUrl.c_str(), code);
   if (code != 200) {
     http.end();
     return false;
@@ -618,13 +623,13 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
 
   int sealedLen = http.getSize();
   if (sealedLen <= (int)bundle_seal::OVERHEAD_BYTES || sealedLen > 32 * 1024) {
-    Serial.printf("worker: bad sealed length %d\n", sealedLen);
+    Log.printf("worker: bad sealed length %d\n", sealedLen);
     http.end();
     return false;
   }
   uint8_t* sealedBuf = (uint8_t*)malloc(sealedLen);
   if (!sealedBuf) {
-    Serial.printf("worker: malloc(%d) failed\n", sealedLen);
+    Log.printf("worker: malloc(%d) failed\n", sealedLen);
     http.end();
     return false;
   }
@@ -637,7 +642,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
       int n = stream->readBytes(sealedBuf + got, sealedLen - got);
       if (n > 0) { got += n; lastProgress = millis(); }
     } else if (millis() - lastProgress > 5000) {
-      Serial.println("worker: read stalled");
+      Log.println("worker: read stalled");
       break;
     } else {
       delay(1);
@@ -648,7 +653,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   http.end();
   if (dateHdr.length()) setClockFromHttpDate(dateHdr);
   if ((int)got != sealedLen) {
-    Serial.printf("worker: short read %u/%d\n", got, sealedLen);
+    Log.printf("worker: short read %u/%d\n", got, sealedLen);
     free(sealedBuf);
     return false;
   }
@@ -656,7 +661,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   size_t plaintextCap = sealedLen - bundle_seal::OVERHEAD_BYTES;
   uint8_t* plaintext = (uint8_t*)malloc(plaintextCap);
   if (!plaintext) {
-    Serial.printf("worker: malloc(%u) for plaintext failed\n", (unsigned)plaintextCap);
+    Log.printf("worker: malloc(%u) for plaintext failed\n", (unsigned)plaintextCap);
     free(sealedBuf);
     return false;
   }
@@ -664,16 +669,16 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
                                          plaintext, plaintextCap);
   free(sealedBuf);
   if (plaintextLen < 0) {
-    Serial.println("worker: decrypt FAILED (wrong key, wire format mismatch, or tampered)");
+    Log.println("worker: decrypt FAILED (wrong key, wire format mismatch, or tampered)");
     free(plaintext);
     return false;
   }
-  Serial.printf("worker: decrypted %d bytes (uploaded_at=%s)\n",
+  Log.printf("worker: decrypted %d bytes (uploaded_at=%s)\n",
                 plaintextLen, uploadedAt.length() ? uploadedAt.c_str() : "?");
 
   // Validate bundle header (same as the prior bridge-fetch path used).
   if (plaintextLen < 4) {
-    Serial.println("worker: plaintext too short for header");
+    Log.println("worker: plaintext too short for header");
     free(plaintext);
     return false;
   }
@@ -681,7 +686,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   uint8_t version = plaintext[2];
   uint8_t panelCount = plaintext[3];
   if (magic != BUNDLE_MAGIC || version != BUNDLE_VERSION_REQUIRED || panelCount == 0) {
-    Serial.printf("worker: bad bundle header magic=0x%04x ver=%u count=%u\n",
+    Log.printf("worker: bad bundle header magic=0x%04x ver=%u count=%u\n",
                   magic, version, panelCount);
     free(plaintext);
     return false;
@@ -689,7 +694,7 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
 
   Preferences prefs;
   if (!prefs.begin("x3-cache", false)) {
-    Serial.println("worker: NVS open failed");
+    Log.println("worker: NVS open failed");
     free(plaintext);
     return false;
   }
@@ -701,14 +706,14 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   size_t freeEntries = prefs.freeEntries();
   prefs.end();
   free(plaintext);
-  Serial.printf("worker: NVS putBytes wrote=%u/%d freeEntries=%u\n",
+  Log.printf("worker: NVS putBytes wrote=%u/%d freeEntries=%u\n",
                 (unsigned)wrote, plaintextLen, (unsigned)freeEntries);
   if (wrote != (size_t)plaintextLen) {
-    Serial.println("worker: NVS write FAILED — keeping prior cache");
+    Log.println("worker: NVS write FAILED — keeping prior cache");
     return false;
   }
   rtcPanelTotal = panelCount;
-  Serial.printf("worker: cached %d bytes, %u panels\n", plaintextLen, panelCount);
+  Log.printf("worker: cached %d bytes, %u panels\n", plaintextLen, panelCount);
   return true;
 }
 
@@ -731,7 +736,7 @@ static void postBatteryReadingToWorker(const String& workerUrl,
   HTTPClient http;
   http.setTimeout(10000);
   if (!http.begin(secure, batteryUrl)) {
-    Serial.println("battery: http begin failed");
+    Log.println("battery: http begin failed");
     return;
   }
   http.addHeader("Authorization", "Bearer " + bearer);
@@ -741,7 +746,7 @@ static void postBatteryReadingToWorker(const String& workerUrl,
   char body[32];
   snprintf(body, sizeof(body), "{\"mv\":%u}", (unsigned)batteryMv);
   int code = http.PUT((uint8_t*)body, strlen(body));
-  Serial.printf("battery: PUT %s body=%s -> %d\n", batteryUrl.c_str(), body, code);
+  Log.printf("battery: PUT %s body=%s -> %d\n", batteryUrl.c_str(), body, code);
   http.end();
 }
 
@@ -792,7 +797,7 @@ static bool loadCachedScreen(uint32_t idx, uint8_t viewMode, ScreenData& out) {
   uint8_t version = buf[2];
   uint8_t screenCount = buf[3];
   if (magic != BUNDLE_MAGIC || version != BUNDLE_VERSION_REQUIRED || idx >= screenCount) {
-    Serial.printf("cache: invalid blob magic=0x%04x ver=%u idx=%u/%u\n",
+    Log.printf("cache: invalid blob magic=0x%04x ver=%u idx=%u/%u\n",
                   magic, version, (unsigned)idx, (unsigned)screenCount);
     free(buf);
     return false;
@@ -809,16 +814,16 @@ static bool loadCachedScreen(uint32_t idx, uint8_t viewMode, ScreenData& out) {
                   : (viewMode == VIEW_7D) ? ofs7
                                           : ofs24;
   if (target >= len) {
-    Serial.printf("cache: bad offset %u (len=%u)\n", (unsigned)target, (unsigned)len);
+    Log.printf("cache: bad offset %u (len=%u)\n", (unsigned)target, (unsigned)len);
     free(buf);
     return false;
   }
   hydrateScreen(buf, len, target, out);
   if (out.type == SCREEN_STAT_GROUP) {
-    Serial.printf("cache: screen idx=%u view=%s STAT_GROUP n=%u\n",
+    Log.printf("cache: screen idx=%u view=%s STAT_GROUP n=%u\n",
                   (unsigned)idx, viewLabel(viewMode), (unsigned)out.stat_count);
   } else {
-    Serial.printf("cache: screen idx=%u view=%s CHART title='%s' points=%u\n",
+    Log.printf("cache: screen idx=%u view=%s CHART title='%s' points=%u\n",
                   (unsigned)idx, viewLabel(viewMode), out.chart.title, out.chart.point_count);
   }
   free(buf);
@@ -848,7 +853,7 @@ static bool setClockFromHttpDate(const String& dateHdr) {
   settimeofday(&tv, nullptr);
   struct tm lt;
   localtime_r(&t, &lt);
-  Serial.printf("clock: set from HTTP Date → epoch=%lld local=%02d:%02d\n",
+  Log.printf("clock: set from HTTP Date → epoch=%lld local=%02d:%02d\n",
                 (long long)t, lt.tm_hour, lt.tm_min);
   return true;
 }
@@ -908,6 +913,18 @@ static uint32_t gatherTitlesFromCache(uint32_t& cursor_idx) {
     produced++;
   }
   free(buf);
+
+  // Synthesize the trailing "Device Logs" entry. Not part of the bundle —
+  // a virtual panel backed by the RTC log ring buffer.
+  if (produced < MAX_LIST_TITLES) {
+    constexpr const char kLogsTitle[] = "Device Logs";
+    size_t n = sizeof(kLogsTitle) - 1;
+    memcpy(g_list_title_buf[produced], kLogsTitle, n);
+    g_list_title_buf[produced][n] = 0;
+    g_list_titles[produced] = g_list_title_buf[produced];
+    produced++;
+  }
+
   if (cursor_idx >= produced) cursor_idx = 0;
   return produced;
 }
@@ -933,7 +950,14 @@ static bool runListMode(uint32_t& out_idx) {
   uint32_t titleCount = gatherTitlesFromCache(out_idx);
   if (titleCount == 0) return false;
 
-  uint32_t cursor = (rtcPanelIdx < titleCount) ? rtcPanelIdx : 0;
+  // If we entered list mode while already on the synthetic logs screen,
+  // place the cursor on its row so the user sees what they came from.
+  uint32_t cursor;
+  if (rtcPanelIdx == LOGS_PANEL_IDX) {
+    cursor = titleCount - 1;
+  } else {
+    cursor = (rtcPanelIdx < titleCount) ? rtcPanelIdx : 0;
+  }
   out_idx = cursor;
 
   // Initial draw — full refresh so the prior panel's pixels get scrubbed.
@@ -956,14 +980,14 @@ static bool runListMode(uint32_t& out_idx) {
 
     // Inactivity timeout — pick whatever's under the cursor.
     if (millis() - last_input_ms > LIST_MODE_TIMEOUT_MS) {
-      Serial.printf("list: timeout, selecting idx=%u\n", (unsigned)cursor);
+      Log.printf("list: timeout, selecting idx=%u\n", (unsigned)cursor);
       break;
     }
 
     // POWER button — edge detect on press.
     bool pwr_now = (digitalRead(POWER_BUTTON_GPIO) == LOW);
     if (pwr_now && !last_pwr_pressed) {
-      Serial.printf("list: POWER → select idx=%u\n", (unsigned)cursor);
+      Log.printf("list: POWER → select idx=%u\n", (unsigned)cursor);
       // Wait for release so the post-loop deepSleep doesn't immediately re-fire.
       uint32_t t = millis();
       while (digitalRead(POWER_BUTTON_GPIO) == LOW && millis() - t < MAX_PRESS_HOLD_MS) delay(10);
@@ -994,7 +1018,7 @@ static bool runListMode(uint32_t& out_idx) {
         moved = true;
       }
       if (moved) {
-        Serial.printf("list: %s → cursor %u/%u\n", bname, (unsigned)cursor, (unsigned)titleCount);
+        Log.printf("list: %s → cursor %u/%u\n", bname, (unsigned)cursor, (unsigned)titleCount);
         drawListView(display.getFrameBuffer(), g_list_titles, titleCount, cursor);
         display.displayBuffer(EInkDisplay::FAST_REFRESH, /*turnOffScreen=*/false);
       }
@@ -1002,7 +1026,14 @@ static bool runListMode(uint32_t& out_idx) {
     last_adc = b;
   }
 
-  out_idx = cursor;
+  // The last entry in the title list is always the synthesized "Device
+  // Logs" item. If that's what the user picked, return LOGS_PANEL_IDX
+  // (the sentinel main.cpp uses to skip bundle-cache load).
+  if (cursor == titleCount - 1) {
+    out_idx = LOGS_PANEL_IDX;
+  } else {
+    out_idx = cursor;
+  }
   return selected;
 }
 
@@ -1029,10 +1060,10 @@ void setup() {
   tzset();
 
   esp_reset_reason_t resetReason = esp_reset_reason();
-  Serial.printf("\n=== boot cycle=%u wake_cause=%d reset_reason=%d nav=%d ===\n",
+  Log.printf("\n=== boot cycle=%u wake_cause=%d reset_reason=%d nav=%d ===\n",
                 rtcCycleCount, (int)wakeCause, (int)resetReason, (int)pendingNav);
 
-  Serial.printf("rtcMagic=0x%08x (want 0x%08x) demoIdx=%u\n",
+  Log.printf("rtcMagic=0x%08x (want 0x%08x) demoIdx=%u\n",
                 (unsigned)rtcMagic, (unsigned)RTC_MAGIC_VALUE, (unsigned)rtcDemoIdx);
 
   Preferences prefs;
@@ -1058,14 +1089,14 @@ void setup() {
   // so the SDK does a differential refresh (only changed pixels) instead of
   // its default forced full sync at boot.
   if (rtcEpdRamValid) {
-    Serial.println("epd: trusting prior RED RAM contents → differential refresh");
+    Log.println("epd: trusting prior RED RAM contents → differential refresh");
     display.markRedRamSynced();
   }
   // New firmware? Old build's pixels are still on screen and in EPD RAM 0x10.
   // Force a one-shot full refresh so the ghost gets scrubbed cleanly.
   const bool firmwareChanged = (rtcFirmwareTag != kFirmwareTag);
   if (firmwareChanged) {
-    Serial.printf("firmware change: %08x -> %08x → forcing full refresh + cache wipe\n",
+    Log.printf("firmware change: %08x -> %08x → forcing full refresh + cache wipe\n",
                   (unsigned)rtcFirmwareTag, (unsigned)kFirmwareTag);
     display.requestResync();
     rtcFirmwareTag = kFirmwareTag;
@@ -1095,11 +1126,11 @@ void setup() {
   bool keypair_loaded = x25519_keystore::exists() &&
                         x25519_keystore::load(x3_sk, x3_pk);
   if (!keypair_loaded) {
-    Serial.println("enroll: no keypair in NVS — generating");
+    Log.println("enroll: no keypair in NVS — generating");
     if (x25519_keystore::generate_and_store(x3_sk, x3_pk)) {
       char pk_b64[48];
       x25519_keystore::b64url_encode(x3_pk, x25519_keystore::KEY_LEN, pk_b64, sizeof(pk_b64));
-      Serial.printf("enroll: X3_PUBKEY_B64=%s\n", pk_b64);
+      Log.printf("enroll: X3_PUBKEY_B64=%s\n", pk_b64);
       enroll_screen::render(display.getFrameBuffer(), x3_pk);
       display.requestResync();
       display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/true);
@@ -1107,20 +1138,20 @@ void setup() {
       // Park here. User scans QR + updates Pi config at their leisure; any
       // button press wakes us, and on the next boot the keypair exists and
       // we fall through to the normal render path.
-      Serial.println("enroll: sleeping 24h (or until power button wake)");
+      Log.println("enroll: sleeping 24h (or until power button wake)");
       deepSleep(24ULL * 3600ULL);
     } else {
-      Serial.println("enroll: KEYGEN FAILED — continuing without crypto");
+      Log.println("enroll: KEYGEN FAILED — continuing without crypto");
     }
   } else {
     char pk_b64[48];
     x25519_keystore::b64url_encode(x3_pk, x25519_keystore::KEY_LEN, pk_b64, sizeof(pk_b64));
-    Serial.printf("crypto: X3_PUBKEY_B64=%s\n", pk_b64);
+    Log.printf("crypto: X3_PUBKEY_B64=%s\n", pk_b64);
 
     // After a fresh flash, show the QR for up to 30s so the operator can
     // re-scan or re-copy the pubkey. Power-button press exits early.
     if (firmwareChanged) {
-      Serial.println("enroll: post-flash QR display (30s or power-button skip)");
+      Log.println("enroll: post-flash QR display (30s or power-button skip)");
       enroll_screen::render(display.getFrameBuffer(), x3_pk);
       display.requestResync();
       display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/false);
@@ -1137,7 +1168,7 @@ void setup() {
             delay(10);
           }
           delay(BUTTON_DEBOUNCE_MS);
-          Serial.println("enroll: skipped by power button");
+          Log.println("enroll: skipped by power button");
           break;
         }
         delay(50);
@@ -1148,7 +1179,7 @@ void setup() {
 #if DEMO_MODE
   const bool freshBoot = (rtcMagic != RTC_MAGIC_VALUE);
   rtcMagic = RTC_MAGIC_VALUE;
-  Serial.printf("demo: freshBoot=%d (idx before action=%u)\n",
+  Log.printf("demo: freshBoot=%d (idx before action=%u)\n",
                 (int)freshBoot, (unsigned)rtcDemoIdx);
 
   if (freshBoot) {
@@ -1157,19 +1188,19 @@ void setup() {
     if (pendingNav == NAV_FORWARD) {
       rtcDemoIdx = (rtcDemoIdx + 1) % kDemoPanelCount;
       rtcViewMode = VIEW_24H;
-      Serial.println("demo: single press → forward");
+      Log.println("demo: single press → forward");
     } else if (pendingNav == NAV_TOGGLE_ZOOM) {
       rtcViewMode = (rtcViewMode + 1) % 3;
-      Serial.printf("demo: double-click → view=%s\n", viewLabel(rtcViewMode));
+      Log.printf("demo: double-click → view=%s\n", viewLabel(rtcViewMode));
     } else if (pendingNav == NAV_ENTER_LIST) {
-      Serial.println("demo: long press → list mode (no-op in demo)");
+      Log.println("demo: long press → list mode (no-op in demo)");
     } else {
-      Serial.println("demo: button wake but press not classified — redraw");
+      Log.println("demo: button wake but press not classified — redraw");
     }
   } else {
-    Serial.printf("demo: non-GPIO wake (cause=%d) — redraw\n", (int)wakeCause);
+    Log.printf("demo: non-GPIO wake (cause=%d) — redraw\n", (int)wakeCause);
   }
-  Serial.printf("demo: drawing dashboard idx=%u\n", (unsigned)rtcDemoIdx);
+  Log.printf("demo: drawing dashboard idx=%u\n", (unsigned)rtcDemoIdx);
 
   PanelData demoP = *kDemoPanels[rtcDemoIdx % kDemoPanelCount];
   demoP.view_label = viewLabel(rtcViewMode);
@@ -1177,11 +1208,11 @@ void setup() {
   drawStatusOverlay(rtcCycleCount, /*wifiOk=*/true, /*fetchOk=*/true);
   bool wantFull = firmwareChanged || (rtcCycleCount % FULL_REFRESH_EVERY) == 0;
   if (wantFull) display.requestResync();
-  Serial.printf("displayBuffer(refresh=%s) starting\n", wantFull ? "FULL" : "FAST");
+  Log.printf("displayBuffer(refresh=%s) starting\n", wantFull ? "FULL" : "FAST");
   Serial.flush();
   display.displayBuffer(wantFull ? EInkDisplay::FULL_REFRESH : EInkDisplay::FAST_REFRESH,
                         /*turnOffScreen=*/true);
-  Serial.println("displayBuffer done");
+  Log.println("displayBuffer done");
   rtcEpdRamValid = true;
   rtcCycleCount++;
   deepSleep(600);  // 10-min safety timer + power-button wake
@@ -1201,16 +1232,26 @@ void setup() {
   // never touch WiFi, so the response is instant.
   if (buttonWake && rtcPanelTotal > 0) {
     if (pendingNav == NAV_FORWARD) {
-      rtcPanelIdx = (rtcPanelIdx + 1) % rtcPanelTotal;
+      // Forward-press never lands on the logs screen — if we're there,
+      // jump back to the first bundle panel. Otherwise cycle modulo the
+      // bundle count.
+      if (rtcPanelIdx >= rtcPanelTotal) {
+        rtcPanelIdx = 0;
+      } else {
+        rtcPanelIdx = (rtcPanelIdx + 1) % rtcPanelTotal;
+      }
       // Switching panels resets to the panel's configured default view —
       // either Grafana's timeFrom override (7d for soil/lawn) or 24h.
       rtcViewMode = defaultViewForPanel(rtcPanelIdx);
-      Serial.printf("nav: forward → idx=%u view=%s\n",
+      Log.printf("nav: forward → idx=%u view=%s\n",
                     (unsigned)rtcPanelIdx, viewLabel(rtcViewMode));
     } else if (pendingNav == NAV_TOGGLE_ZOOM) {
-      // Cycle 24h → 2h → 7d → 24h.
-      rtcViewMode = (rtcViewMode + 1) % 3;
-      Serial.printf("nav: double-click → view %s\n", viewLabel(rtcViewMode));
+      // No view modes on the logs screen — leave it alone there.
+      if (rtcPanelIdx != LOGS_PANEL_IDX) {
+        // Cycle 24h → 2h → 7d → 24h.
+        rtcViewMode = (rtcViewMode + 1) % 3;
+        Log.printf("nav: double-click → view %s\n", viewLabel(rtcViewMode));
+      }
     }
     // NAV_ENTER_LIST handled later in setup() — needs the rendered cache
     // to be loaded so we can show all titles in the list view.
@@ -1238,12 +1279,12 @@ void setup() {
     } else {
       time_t elapsed = nowEpoch - rtcLastFetchEpoch;
       needFetch = (elapsed >= (time_t)currentRefreshInterval());
-      Serial.printf("refresh: %llds since last fetch (view=%s interval=%llus) → try=%d\n",
+      Log.printf("refresh: %llds since last fetch (view=%s interval=%llus) → try=%d\n",
                     (long long)elapsed, viewLabel(rtcViewMode),
                     (unsigned long long)currentRefreshInterval(), (int)needFetch);
     }
   } else if (quiet) {
-    Serial.println("quiet hours: skipping background fetch");
+    Log.println("quiet hours: skipping background fetch");
   }
 
   bool wifiOk = false;
@@ -1277,7 +1318,7 @@ void setup() {
           postBatteryReadingToWorker(workerUrl, workerBearer, batteryMv);
         }
       } else {
-        Serial.printf("wifi: '%s' floor not met (%llds < %us); skipping fetch this cycle\n",
+        Log.printf("wifi: '%s' floor not met (%llds < %us); skipping fetch this cycle\n",
                       wc.ssid.c_str(), (long long)elapsedSinceFetch,
                       (unsigned)wc.min_refresh_sec);
       }
@@ -1294,21 +1335,41 @@ void setup() {
   if (buttonWake && pendingNav == NAV_ENTER_LIST && rtcPanelTotal > 0) {
     uint32_t picked = rtcPanelIdx;
     bool changed = runListMode(picked);
-    if (changed && picked < rtcPanelTotal) {
-      rtcPanelIdx = picked;
-      rtcViewMode = defaultViewForPanel(rtcPanelIdx);
-      Serial.printf("list: picked idx=%u view=%s\n",
-                    (unsigned)rtcPanelIdx, viewLabel(rtcViewMode));
+    if (changed) {
+      // runListMode returns LOGS_PANEL_IDX when the user picks the "Device
+      // Logs" entry (synthesized at the end of the title list); we accept
+      // that as a valid index even though it's > rtcPanelTotal.
+      if (picked == LOGS_PANEL_IDX || picked < rtcPanelTotal) {
+        rtcPanelIdx = picked;
+        if (picked != LOGS_PANEL_IDX) {
+          rtcViewMode = defaultViewForPanel(rtcPanelIdx);
+        }
+        Log.printf("list: picked idx=%s view=%s\n",
+                      (picked == LOGS_PANEL_IDX) ? "LOGS" : String((unsigned)rtcPanelIdx).c_str(),
+                      (picked == LOGS_PANEL_IDX) ? "n/a" : viewLabel(rtcViewMode));
+      }
     }
     justExitedListMode = true;
   }
 
-  // Render the current cached screen/view. Falls back gracefully if cache is
-  // empty (first boot, fetch failed) — we leave the splash on screen.
+  // Render the current screen. For LOGS_PANEL_IDX we don't touch the
+  // bundle cache — the data lives in the RTC log ring buffer.
   ScreenData screen = {};
-  bool haveCache = loadCachedScreen(rtcPanelIdx, rtcViewMode, screen);
+  bool haveCache = false;
+  bool showLogs = (rtcPanelIdx == LOGS_PANEL_IDX);
+  if (!showLogs) {
+    haveCache = loadCachedScreen(rtcPanelIdx, rtcViewMode, screen);
+  }
   const char* vl = viewLabel(rtcViewMode);
-  if (haveCache) {
+  if (showLogs) {
+    drawLogsScreen(display.getFrameBuffer());
+    drawStatusOverlay(rtcCycleCount, wifiOk || !needFetch, fetchOk || !needFetch);
+    // Logs are dense text — always do a full refresh so old pixels don't
+    // smear under the new content.
+    display.requestResync();
+    display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/true);
+    rtcEpdRamValid = true;
+  } else if (haveCache) {
     if (screen.type == SCREEN_STAT_GROUP) {
       drawStatScreen(display.getFrameBuffer(), screen.stats, screen.stat_count, vl);
     } else {
@@ -1331,7 +1392,7 @@ void setup() {
     // screen on whatever was last drawn.
     drawStatusOverlay(rtcCycleCount, /*wifiOk=*/false, /*fetchOk=*/false);
     refreshStatusOverlay();
-    Serial.printf("cache miss on button wake (idx=%u view=%s) — keeping screen\n",
+    Log.printf("cache miss on button wake (idx=%u view=%s) — keeping screen\n",
                   (unsigned)rtcPanelIdx, viewLabel(rtcViewMode));
   }
   rtcCycleCount++;
@@ -1344,9 +1405,9 @@ void setup() {
   if (imuInit()) {
     int16_t ax = 0, ay = 0, az = 0;
     if (imuReadAccel(ax, ay, az)) {
-      Serial.printf("imu: accel raw ax=%d ay=%d az=%d\n", ax, ay, az);
+      Log.printf("imu: accel raw ax=%d ay=%d az=%d\n", ax, ay, az);
     } else {
-      Serial.println("imu: accel read failed");
+      Log.println("imu: accel read failed");
     }
   }
   Serial.flush();
@@ -1360,7 +1421,7 @@ void setup() {
     // Sleep until the quiet-hours window ends (06:00 local). Button wakes
     // still work for instant cache-served panel switches.
     sleepSec = secondsUntilQuietEnd();
-    Serial.printf("quiet hours: sleeping %llus until 06:00 local\n",
+    Log.printf("quiet hours: sleeping %llus until 06:00 local\n",
                   (unsigned long long)sleepSec);
   } else if (rtcLastFetchEpoch == 0) {
     // Never had a successful fetch (first boot or no WiFi yet) — retry
