@@ -14,6 +14,8 @@ MAX_BUNDLE_BYTES = "65536"
 # or via the API during deploy (see deploy.sh).
 
 [[routes]]
-pattern = "dashboard.contexa.net/*"
+# Custom Domains don't accept wildcards or paths — just the bare hostname.
+# The Worker still receives every request to this domain.
+pattern = "dashboard.contexa.net"
 zone_name = "contexa.net"
 custom_domain = true
