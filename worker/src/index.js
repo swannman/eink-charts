@@ -1,5 +1,5 @@
 // Tiny ferry between the Pi (push) and the X3 (pull). The payload is already
-// X25519+ChaCha20-Poly1305 sealed by the Pi before upload — this Worker never
+// X25519 + AES-256-GCM sealed by the Pi before upload — this Worker never
 // sees plaintext and doesn't hold the X3's private key. Bearer-token auth is
 // only here to keep randos off the endpoint; confidentiality is end-to-end.
 

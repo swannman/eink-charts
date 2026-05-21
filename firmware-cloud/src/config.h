@@ -44,7 +44,11 @@ constexpr uint8_t QMI_REG_AX_L = 0x35;
 
 // Power-button press patterns.
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 50;
-constexpr uint32_t DOUBLE_CLICK_WINDOW_MS = 200;  // gap between presses
+// The wake event itself consumes ~150-300 ms before readPressPattern runs,
+// so the gap-between-presses window has to cover the rest of a natural
+// double-click. 400 ms gives us cushion without making forward-presses feel
+// laggy (we still wait this long after release before treating it as single).
+constexpr uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
 constexpr uint32_t LONG_PRESS_MS = 800;           // held > this → long press
 constexpr uint32_t MAX_PRESS_HOLD_MS = 3000;      // give up reading past this
 
