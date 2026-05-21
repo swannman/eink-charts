@@ -3,7 +3,9 @@
 #include <Arduino.h>
 #include <string.h>
 
+#include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
+#include <mbedtls/entropy.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/hkdf.h>
 #include <mbedtls/md.h>
@@ -16,13 +18,22 @@ static const char INFO_STR[] = "EInkCharts seal v1";
 
 // Curve25519 scalar multiplication: shared = sk * peer_pk (X coordinate only).
 // Both inputs are 32-byte little-endian. Returns true on success.
+//
+// mbedtls_ecp_mul on Montgomery curves needs an RNG callback for side-channel
+// blinding. Passing NULL produces a misleading MBEDTLS_ERR_ECP_INVALID_KEY
+// (-0x4F80) — burnt a session debugging that, so the entropy + ctr_drbg
+// dance below is mandatory, not optional.
 static bool x25519_ecdh(const uint8_t sk[32], const uint8_t peer_pk[32],
                         uint8_t shared_out[32]) {
+  mbedtls_entropy_context entropy;
+  mbedtls_ctr_drbg_context ctr_drbg;
   mbedtls_ecp_group grp;
   mbedtls_mpi sk_mpi;
   mbedtls_ecp_point peer_point;
   mbedtls_ecp_point shared_point;
 
+  mbedtls_entropy_init(&entropy);
+  mbedtls_ctr_drbg_init(&ctr_drbg);
   mbedtls_ecp_group_init(&grp);
   mbedtls_mpi_init(&sk_mpi);
   mbedtls_ecp_point_init(&peer_point);
@@ -31,6 +42,11 @@ static bool x25519_ecdh(const uint8_t sk[32], const uint8_t peer_pk[32],
   bool ok = false;
   int ret;
   do {
+    static const char pers[] = "x3-x25519-ecdh";
+    ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                                (const uint8_t*)pers, sizeof(pers) - 1);
+    if (ret != 0) break;
+
     ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
     if (ret != 0) break;
 
@@ -46,7 +62,7 @@ static bool x25519_ecdh(const uint8_t sk[32], const uint8_t peer_pk[32],
     if (ret != 0) break;
 
     ret = mbedtls_ecp_mul(&grp, &shared_point, &sk_mpi, &peer_point,
-                          /*f_rng=*/nullptr, /*p_rng=*/nullptr);
+                          mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) break;
 
     ret = mbedtls_mpi_write_binary_le(&shared_point.MBEDTLS_PRIVATE(X),
@@ -64,6 +80,8 @@ static bool x25519_ecdh(const uint8_t sk[32], const uint8_t peer_pk[32],
   mbedtls_ecp_point_free(&peer_point);
   mbedtls_mpi_free(&sk_mpi);
   mbedtls_ecp_group_free(&grp);
+  mbedtls_ctr_drbg_free(&ctr_drbg);
+  mbedtls_entropy_free(&entropy);
   return ok;
 }
 

@@ -44,19 +44,17 @@ void render(uint8_t* fb, const uint8_t pubkey[32]) {
 
   // Title (scale 4 → 20 px wide, 28 px tall glyphs).
   fbDrawStringCentered(fb, /*y=*/14, /*scale=*/4, "X3 ENROLLMENT", /*black=*/true);
-  fbDrawStringCentered(fb, /*y=*/56, /*scale=*/2, "Scan or copy the public key below", true);
 
   // QR. Total footprint = (qr.size + 2*quiet) * scale.
   // V3: 29 + 4 = 33 modules × 12 px = 396 px.
   constexpr int QR_PX = (29 + 2 * QR_QUIET_MODULES) * QR_SCALE;
   int qr_x = (FB_WIDTH - QR_PX) / 2;
-  int qr_y = 90;
+  int qr_y = 60;
   drawQr(fb, b64, qr_x, qr_y);
 
-  // Key label + base64 text below.
-  int text_y = qr_y + QR_PX + 12;
-  fbDrawStringCentered(fb, text_y, /*scale=*/2, "X3 pubkey (base64url):", true);
-  fbDrawStringCentered(fb, text_y + 22, /*scale=*/2, b64, true);
+  // Base64 text directly under the QR — no label, just the value, so it
+  // fits above the footer on a 528-pixel-tall screen.
+  fbDrawStringCentered(fb, qr_y + QR_PX + 8, /*scale=*/2, b64, true);
 
   // Footer hint.
   fbDrawStringCentered(fb, FB_HEIGHT - 18, /*scale=*/1,

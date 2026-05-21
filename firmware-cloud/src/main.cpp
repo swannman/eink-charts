@@ -1083,6 +1083,33 @@ void setup() {
     char pk_b64[48];
     x25519_keystore::b64url_encode(x3_pk, x25519_keystore::KEY_LEN, pk_b64, sizeof(pk_b64));
     Serial.printf("crypto: X3_PUBKEY_B64=%s\n", pk_b64);
+
+    // After a fresh flash, show the QR for up to 30s so the operator can
+    // re-scan or re-copy the pubkey. Power-button press exits early.
+    if (firmwareChanged) {
+      Serial.println("enroll: post-flash QR display (30s or power-button skip)");
+      enroll_screen::render(display.getFrameBuffer(), x3_pk);
+      display.requestResync();
+      display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/false);
+      rtcEpdRamValid = true;
+
+      pinMode(POWER_BUTTON_GPIO, INPUT_PULLUP);
+      uint32_t start = millis();
+      while (millis() - start < 30000) {
+        if (digitalRead(POWER_BUTTON_GPIO) == LOW) {
+          // Wait for release so the post-loop flow doesn't read it again.
+          uint32_t pressStart = millis();
+          while (digitalRead(POWER_BUTTON_GPIO) == LOW &&
+                 millis() - pressStart < MAX_PRESS_HOLD_MS) {
+            delay(10);
+          }
+          delay(BUTTON_DEBOUNCE_MS);
+          Serial.println("enroll: skipped by power button");
+          break;
+        }
+        delay(50);
+      }
+    }
   }
 
 #if DEMO_MODE
