@@ -328,84 +328,78 @@ void drawPanel(uint8_t* fb, const PanelData& panel) {
 }
 
 // -----------------------------------------------------------------------------
-// Device-logs screen. Renders the RTC ring buffer (log_buffer::snapshot) as a
-// wall of 5x7 text. If the buffer overflows the screen (>~63 rows), we show
-// the most recent rows — older content scrolls off the top.
+// Device-logs screen. Renders the RTC ring buffer as proportional FreeSans
+// 9pt text — kerning packs more onto each line vs. the 5x7 fixed font.
+// Long lines are NOT wrapped; they get clipped at the right edge. Most log
+// lines fit comfortably under ~80 chars at this font size.
+
+#include <Fonts/FreeSans9pt7b.h>
 
 #include "log_buffer.h"
 
-void drawLogsScreen(uint8_t* fb) {
+int drawLogsScreen(uint8_t* fb, int scroll_offset_lines) {
   fbClear(fb, /*white=*/true);
-  fbDrawStringCentered(fb, /*y=*/2, /*scale=*/2, "DEVICE LOGS", /*black=*/true);
 
-  // Layout: ~18 px reserved for the title at the top.
-  constexpr int LOGS_TOP = 20;
-  constexpr int CHAR_W = FB_GLYPH_W + 1;  // 5 + 1 inter-char
-  constexpr int CHAR_H = FB_GLYPH_H + 1;  // 7 + 1 inter-line
-  constexpr int COLS = FB_WIDTH / CHAR_W;            // 132
-  constexpr int MAX_ROWS = (FB_HEIGHT - LOGS_TOP) / CHAR_H;  // ~63
+  constexpr int LOGS_LEFT = 12;
+  constexpr int LOGS_TOP = 16;
 
   static uint8_t buf[log_buffer::SIZE];
   size_t n = log_buffer::snapshot(buf);
   if (n == 0) {
-    fbDrawStringCentered(fb, FB_HEIGHT / 2, 2, "(no logs yet — boot in progress)", true);
-    return;
+    fbDrawStringGfxCentered(fb, FB_HEIGHT / 2, &FreeSans9pt7b,
+                            "(no logs yet — boot in progress)", true);
+    return 0;
   }
 
-  // First pass: count rows the content would occupy.
-  int total_rows = 1;
-  int col = 0;
-  for (size_t i = 0; i < n; i++) {
-    if (buf[i] == '\n') {
-      if (i < n - 1) total_rows++;
-      col = 0;
-    } else {
-      col++;
-      if (col >= COLS) { total_rows++; col = 0; }
-    }
-  }
-  int rows_to_skip = (total_rows > MAX_ROWS) ? (total_rows - MAX_ROWS) : 0;
+  const int line_h = fbGfxLineHeight(&FreeSans9pt7b);
+  const int max_rows = (FB_HEIGHT - LOGS_TOP) / line_h;
 
-  // Second pass: skip `rows_to_skip` rows, then render up to MAX_ROWS.
+  // Count total lines so we can choose which window to render.
+  int total_newlines = 0;
+  for (size_t i = 0; i < n; i++) if (buf[i] == '\n') total_newlines++;
+  int total_lines = total_newlines + ((n > 0 && buf[n - 1] != '\n') ? 1 : 0);
+  if (total_lines == 0) total_lines = 1;
+
+  // Show lines [skip_lines, skip_lines + max_rows). When scroll_offset=0
+  // skip_lines puts the window flush against the latest line; bumping
+  // scroll_offset slides the window earlier (toward the oldest).
+  const int max_offset = (total_lines > max_rows) ? (total_lines - max_rows) : 0;
+  if (scroll_offset_lines < 0) scroll_offset_lines = 0;
+  if (scroll_offset_lines > max_offset) scroll_offset_lines = max_offset;
+  int skip_lines = (total_lines > max_rows)
+      ? (total_lines - max_rows - scroll_offset_lines)
+      : 0;
+  if (skip_lines < 0) skip_lines = 0;
+
   size_t start = 0;
-  if (rows_to_skip > 0) {
-    int row = 0;
-    col = 0;
+  if (skip_lines > 0) {
+    int seen = 0;
     for (size_t i = 0; i < n; i++) {
-      if (buf[i] == '\n') {
-        row++;
-        col = 0;
-        if (row == rows_to_skip) { start = i + 1; break; }
-      } else {
-        col++;
-        if (col >= COLS) {
-          row++;
-          col = 0;
-          if (row == rows_to_skip) { start = i; break; }
-        }
-      }
+      if (buf[i] == '\n' && ++seen == skip_lines) { start = i + 1; break; }
     }
   }
 
-  int x = 0;
-  int y = LOGS_TOP;
-  col = 0;
-  for (size_t i = start; i < n; i++) {
-    uint8_t c = buf[i];
-    if (c == '\n') {
-      x = 0; y += CHAR_H; col = 0;
-      if (y + CHAR_H > FB_HEIGHT) break;
-      continue;
+  // Render each line. fbDrawStringGfx takes the BASELINE y.
+  char tmp[256];
+  int y = LOGS_TOP + line_h;
+  int rendered = 0;
+  size_t line_start = start;
+  for (size_t i = start; i <= n && rendered < max_rows; i++) {
+    if (i == n || buf[i] == '\n') {
+      size_t len = i - line_start;
+      if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
+      size_t out = 0;
+      for (size_t k = 0; k < len; k++) {
+        uint8_t c = buf[line_start + k];
+        if (c >= 32 && c < 127) tmp[out++] = (char)c;
+      }
+      tmp[out] = 0;
+      fbDrawStringGfx(fb, LOGS_LEFT, y, &FreeSans9pt7b, tmp, /*black=*/true);
+      y += line_h;
+      rendered++;
+      line_start = i + 1;
     }
-    if (col >= COLS) {
-      x = 0; y += CHAR_H; col = 0;
-      if (y + CHAR_H > FB_HEIGHT) break;
-    }
-    // Skip non-printable bytes (ANSI codes, weird control chars).
-    if (c >= 32 && c < 127) {
-      fbDrawChar(fb, x, y, /*scale=*/1, (char)c, /*black=*/true);
-    }
-    x += CHAR_W;
-    col++;
   }
+
+  return max_offset;
 }

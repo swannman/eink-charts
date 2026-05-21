@@ -33,3 +33,8 @@ void fbDrawStringGfx(uint8_t* fb, int x, int y, const GFXfont* font, const char*
 // Looks blocky for scale>1 (vector fonts are pre-rasterized) but lets us
 // reuse the existing 18pt face for huge stat values.
 void fbDrawStringGfxScaled(uint8_t* fb, int x, int y, const GFXfont* font, const char* s, int scale, bool black);
+
+// GFX equivalents of fbDrawStringCentered. `y` is the BASELINE (GFX
+// convention), x is computed so the string is horizontally centered.
+void fbDrawStringGfxCentered(uint8_t* fb, int y, const GFXfont* font, const char* s, bool black);
+void fbDrawStringGfxScaledCentered(uint8_t* fb, int y, const GFXfont* font, const char* s, int scale, bool black);

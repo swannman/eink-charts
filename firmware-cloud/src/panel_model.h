@@ -40,6 +40,7 @@ void drawStatScreen(uint8_t* fb, const StatEntry* entries, uint32_t n, const cha
 void drawListView(uint8_t* fb, const char* const* titles, uint32_t n, uint32_t cursor_idx);
 
 // Render the device's recent serial-style logs from the RTC ring buffer.
-// Shows the most recent ~63 rows × 132 columns of text. Only accessible via
-// long-press list mode — not part of the forward-press rotation.
-void drawLogsScreen(uint8_t* fb);
+// `scroll_offset_lines` is how many lines to back off from the most recent
+// (0 = bottom of the buffer). Returns the largest valid offset so the
+// caller can clamp page-up presses.
+int drawLogsScreen(uint8_t* fb, int scroll_offset_lines);

@@ -144,3 +144,17 @@ void fbDrawStringGfxScaled(uint8_t* fb, int x, int y, const GFXfont* font, const
     s++;
   }
 }
+
+void fbDrawStringGfxCentered(uint8_t* fb, int y, const GFXfont* font, const char* s, bool black) {
+  if (!font || !s) return;
+  const int w = fbGfxStringWidth(font, s);
+  const int x = (FB_WIDTH - w) / 2;
+  fbDrawStringGfx(fb, x, y, font, s, black);
+}
+
+void fbDrawStringGfxScaledCentered(uint8_t* fb, int y, const GFXfont* font, const char* s, int scale, bool black) {
+  if (!font || !s) return;
+  const int w = fbGfxStringWidthScaled(font, s, scale);
+  const int x = (FB_WIDTH - w) / 2;
+  fbDrawStringGfxScaled(fb, x, y, font, s, scale, black);
+}

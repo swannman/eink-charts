@@ -12,6 +12,9 @@
 #include <vector>
 
 #include <WiFiClientSecure.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSans18pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 
 #include "bundle_seal.h"
 #include "config.h"
@@ -66,6 +69,9 @@ RTC_DATA_ATTR static time_t rtcLastFetchEpoch = 0;
 RTC_DATA_ATTR static uint32_t rtcPanelIdx = 0;
 RTC_DATA_ATTR static uint32_t rtcPanelTotal = 0;
 constexpr uint32_t LOGS_PANEL_IDX = 0xFFFFFFFFu;
+// Lines to skip from the most recent when rendering the logs screen.
+// 0 = show the tail (newest). Bumped by UP-button page presses.
+RTC_DATA_ATTR static int32_t rtcLogsScrollOffset = 0;
 // Refresh cadence — finer time windows want fresher data. 7d barely moves
 // hour-to-hour; 2h zoom is for actively watching a trend.
 constexpr uint64_t REFRESH_INTERVAL_2H_SECONDS  =  5 * 60;
@@ -180,22 +186,25 @@ static void paintConnectingScreen(const String& ssid, uint32_t cycle) {
   uint8_t* fb = display.getFrameBuffer();
   fbClear(fb, /*white=*/true);
 
-  const int scale1 = 4;
-  const int scale2 = 6;
+  // FreeSans18pt7b for the label, FreeSansBold18pt7b scaled ×2 for the
+  // big SSID below it. yAdvance is the GFX line height; the baseline
+  // sits below the top of the cell by ~80% of yAdvance.
+  const int label_h = fbGfxLineHeight(&FreeSans18pt7b);
+  const int ssid_h  = fbGfxLineHeight(&FreeSansBold18pt7b) * 2;
   const int gap = 24;
+  const int total = label_h + gap + ssid_h;
+  const int top = (FB_HEIGHT - total) / 2;
 
-  const int h1 = fbCharCellH(scale1);
-  const int h2 = fbCharCellH(scale2);
-  const int total = h1 + gap + h2;
-  const int y1 = (FB_HEIGHT - total) / 2;
-  const int y2 = y1 + h1 + gap;
-
-  fbDrawStringCentered(fb, y1, scale1, "Connecting to", /*black=*/true);
-  fbDrawStringCentered(fb, y2, scale2, ssid.length() ? ssid.c_str() : "(no SSID)", true);
+  fbDrawStringGfxCentered(fb, top + label_h, &FreeSans18pt7b,
+                          "Connecting to", /*black=*/true);
+  fbDrawStringGfxScaledCentered(fb, top + label_h + gap + ssid_h,
+                                &FreeSansBold18pt7b,
+                                ssid.length() ? ssid.c_str() : "(no SSID)",
+                                /*scale=*/2, true);
 
   char footer[48];
   snprintf(footer, sizeof(footer), "cycle %u", (unsigned)cycle);
-  fbDrawString(fb, 8, FB_HEIGHT - fbCharCellH(2) - 4, 2, footer, true);
+  fbDrawStringGfx(fb, 12, FB_HEIGHT - 8, &FreeSans9pt7b, footer, true);
 
   display.displayBuffer(EInkDisplay::FAST_REFRESH, /*turnOffScreen=*/false);
 }
@@ -979,15 +988,11 @@ static bool runListMode(uint32_t& out_idx) {
     delay(LIST_MODE_POLL_MS);
 
     // Inactivity timeout — pick whatever's under the cursor.
-    if (millis() - last_input_ms > LIST_MODE_TIMEOUT_MS) {
-      Log.printf("list: timeout, selecting idx=%u\n", (unsigned)cursor);
-      break;
-    }
+    if (millis() - last_input_ms > LIST_MODE_TIMEOUT_MS) break;
 
     // POWER button — edge detect on press.
     bool pwr_now = (digitalRead(POWER_BUTTON_GPIO) == LOW);
     if (pwr_now && !last_pwr_pressed) {
-      Log.printf("list: POWER → select idx=%u\n", (unsigned)cursor);
       // Wait for release so the post-loop deepSleep doesn't immediately re-fire.
       uint32_t t = millis();
       while (digitalRead(POWER_BUTTON_GPIO) == LOW && millis() - t < MAX_PRESS_HOLD_MS) delay(10);
@@ -1005,11 +1010,6 @@ static bool runListMode(uint32_t& out_idx) {
     if (b != last_adc && b != ADC_BTN_NONE) {
       last_input_ms = millis();
       bool moved = false;
-      const char* bname = "?";
-      if (b == ADC_BTN_UP)        bname = "UP";
-      else if (b == ADC_BTN_DOWN) bname = "DOWN";
-      else if (b == ADC_BTN_BACK) bname = "BACK";
-      else if (b == ADC_BTN_OK)   bname = "OK";
       if (b == ADC_BTN_BACK || b == ADC_BTN_OK) {
         cursor = (cursor == 0) ? titleCount - 1 : cursor - 1;
         moved = true;
@@ -1018,7 +1018,6 @@ static bool runListMode(uint32_t& out_idx) {
         moved = true;
       }
       if (moved) {
-        Log.printf("list: %s → cursor %u/%u\n", bname, (unsigned)cursor, (unsigned)titleCount);
         drawListView(display.getFrameBuffer(), g_list_titles, titleCount, cursor);
         display.displayBuffer(EInkDisplay::FAST_REFRESH, /*turnOffScreen=*/false);
       }
@@ -1340,13 +1339,14 @@ void setup() {
       // Logs" entry (synthesized at the end of the title list); we accept
       // that as a valid index even though it's > rtcPanelTotal.
       if (picked == LOGS_PANEL_IDX || picked < rtcPanelTotal) {
+        // Reset scroll position when freshly entering the logs screen.
+        if (picked == LOGS_PANEL_IDX && rtcPanelIdx != LOGS_PANEL_IDX) {
+          rtcLogsScrollOffset = 0;
+        }
         rtcPanelIdx = picked;
         if (picked != LOGS_PANEL_IDX) {
           rtcViewMode = defaultViewForPanel(rtcPanelIdx);
         }
-        Log.printf("list: picked idx=%s view=%s\n",
-                      (picked == LOGS_PANEL_IDX) ? "LOGS" : String((unsigned)rtcPanelIdx).c_str(),
-                      (picked == LOGS_PANEL_IDX) ? "n/a" : viewLabel(rtcViewMode));
       }
     }
     justExitedListMode = true;
@@ -1362,13 +1362,61 @@ void setup() {
   }
   const char* vl = viewLabel(rtcViewMode);
   if (showLogs) {
-    drawLogsScreen(display.getFrameBuffer());
+    // Initial render at the current scroll position.
+    int max_offset = drawLogsScreen(display.getFrameBuffer(), rtcLogsScrollOffset);
     drawStatusOverlay(rtcCycleCount, wifiOk || !needFetch, fetchOk || !needFetch);
-    // Logs are dense text — always do a full refresh so old pixels don't
-    // smear under the new content.
     display.requestResync();
-    display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/true);
+    display.displayBuffer(EInkDisplay::FULL_REFRESH, /*turnOffScreen=*/false);
     rtcEpdRamValid = true;
+
+    // Interactive paging. POWER exits (scroll position preserved); 30 s of
+    // inactivity also exits. One "page" = ~1/3 of the visible window so
+    // 2/3 of the prior content stays on screen for context. Use the actual
+    // font line-height so the math matches what drawLogsScreen renders.
+    const int line_h = fbGfxLineHeight(&FreeSans9pt7b);
+    const int rows_per_screen = (FB_HEIGHT - 16) / line_h;
+    const int page_lines = rows_per_screen > 3 ? rows_per_screen / 3 : 1;
+    pinMode(BTN_ADC_PIN, INPUT);
+    analogSetAttenuation(ADC_11db);
+    uint32_t last_input_ms = millis();
+    AdcButton last_adc = ADC_BTN_NONE;
+    bool last_pwr_pressed = false;
+    while (true) {
+      delay(LIST_MODE_POLL_MS);
+      if (millis() - last_input_ms > LIST_MODE_TIMEOUT_MS) break;
+
+      bool pwr_now = (digitalRead(POWER_BUTTON_GPIO) == LOW);
+      if (pwr_now && !last_pwr_pressed) {
+        uint32_t t = millis();
+        while (digitalRead(POWER_BUTTON_GPIO) == LOW &&
+               millis() - t < MAX_PRESS_HOLD_MS) delay(10);
+        break;
+      }
+      last_pwr_pressed = pwr_now;
+
+      AdcButton b = readAdcButton();
+      if (b != last_adc && b != ADC_BTN_NONE) {
+        last_input_ms = millis();
+        int new_offset = rtcLogsScrollOffset;
+        // Same mapping as the list view: lower rocker (BACK or OK) goes
+        // "back" — toward older logs / larger offset. Upper rocker
+        // (UP or DOWN) goes forward — toward newer logs / smaller offset.
+        if (b == ADC_BTN_BACK || b == ADC_BTN_OK) {
+          new_offset += page_lines;
+        } else if (b == ADC_BTN_UP || b == ADC_BTN_DOWN) {
+          new_offset -= page_lines;
+        }
+        if (new_offset < 0) new_offset = 0;
+        if (new_offset > max_offset) new_offset = max_offset;
+        if (new_offset != rtcLogsScrollOffset) {
+          rtcLogsScrollOffset = new_offset;
+          max_offset = drawLogsScreen(display.getFrameBuffer(), rtcLogsScrollOffset);
+          drawStatusOverlay(rtcCycleCount, wifiOk || !needFetch, fetchOk || !needFetch);
+          display.displayBuffer(EInkDisplay::FAST_REFRESH, /*turnOffScreen=*/false);
+        }
+      }
+      last_adc = b;
+    }
   } else if (haveCache) {
     if (screen.type == SCREEN_STAT_GROUP) {
       drawStatScreen(display.getFrameBuffer(), screen.stats, screen.stat_count, vl);

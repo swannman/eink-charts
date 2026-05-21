@@ -3,6 +3,9 @@
 #include <qrcode.h>
 #include <string.h>
 
+#include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
+
 #include "gfx_lite.h"
 #include "x25519_keystore.h"
 
@@ -42,8 +45,9 @@ void render(uint8_t* fb, const uint8_t pubkey[32]) {
   char b64[48];
   x25519_keystore::b64url_encode(pubkey, 32, b64, sizeof(b64));
 
-  // Title (scale 4 → 20 px wide, 28 px tall glyphs).
-  fbDrawStringCentered(fb, /*y=*/14, /*scale=*/4, "X3 ENROLLMENT", /*black=*/true);
+  // Title — proportional bold, large.
+  fbDrawStringGfxCentered(fb, /*baseline=*/44, &FreeSansBold18pt7b,
+                          "X3 ENROLLMENT", /*black=*/true);
 
   // QR. Total footprint = (qr.size + 2*quiet) * scale.
   // V3: 29 + 4 = 33 modules × 12 px = 396 px.
@@ -52,13 +56,13 @@ void render(uint8_t* fb, const uint8_t pubkey[32]) {
   int qr_y = 60;
   drawQr(fb, b64, qr_x, qr_y);
 
-  // Base64 text directly under the QR — no label, just the value, so it
-  // fits above the footer on a 528-pixel-tall screen.
-  fbDrawStringCentered(fb, qr_y + QR_PX + 8, /*scale=*/2, b64, true);
+  // Base64 text directly under the QR.
+  fbDrawStringGfxCentered(fb, qr_y + QR_PX + 20, &FreeSans9pt7b, b64, true);
 
   // Footer hint.
-  fbDrawStringCentered(fb, FB_HEIGHT - 18, /*scale=*/1,
-                       "Paste into /etc/default/grafana-push as X3_PUBKEY_B64", true);
+  fbDrawStringGfxCentered(fb, FB_HEIGHT - 8, &FreeSans9pt7b,
+                          "Paste into /etc/default/grafana-push as X3_PUBKEY_B64",
+                          true);
 }
 
 }  // namespace enroll_screen
