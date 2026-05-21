@@ -28,8 +28,8 @@ npx wrangler deploy
 
 | Secret | Value |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Token with Workers Scripts:Edit + DNS:Edit + Workers Routes:Edit |
-| `CLOUDFLARE_ACCOUNT_ID` | `e586791371224fd8a71725fce7f6f1a6` |
+| `CLOUDFLARE_API_TOKEN` | Token with Workers Scripts:Edit + Workers R2 Storage:Edit + DNS:Edit + Workers Routes:Edit |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Dashboard → right sidebar → Account ID |
 
 The `BEARER_TOKEN` Worker secret is provisioned separately (see below)
 and is intentionally NOT in CI/CD — that way GitHub never sees it. CI
