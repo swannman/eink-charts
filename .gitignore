@@ -6,14 +6,10 @@ __pycache__/
 dist/
 build/
 .DS_Store
-bridge/local-config.yaml
-bridge/local.env
 *.bin
 
-firmware/platformio.local.ini
-firmware/src/secrets.h
-firmware/.pio/
-firmware/.vscode/
+bridge-cloud/local-config.yaml
+bridge-cloud/local.env
 
 firmware-cloud/platformio.local.ini
 firmware-cloud/src/secrets.h

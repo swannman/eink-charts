@@ -1,14 +1,15 @@
-# firmware-cloud/ — X3 firmware for cloud-relay mode
+# firmware-cloud/ — X3 firmware
 
-Forked from `firmware/` to support fetching encrypted dashboard bundles
-from a public Cloudflare Worker. Works from any Wi-Fi with internet
-access — home, phone hotspot, friend's WiFi.
+ESP32-C3 firmware for the Xteink X3 e-paper display. Fetches encrypted
+dashboard bundles from a public Cloudflare Worker over Wi-Fi when any
+configured network is in range; falls back to BLE (to the iOS companion
+app) when no Wi-Fi is reachable.
 
-> Use this with [`../bridge-cloud/`](../bridge-cloud/README.md) and
-> [`../worker/`](../worker/README.md). For the home-LAN-only variant
-> (simpler, no encryption), see [`../firmware/`](../firmware/README.md).
+> Pairs with [`../bridge-cloud/`](../bridge-cloud/README.md) (Pi push
+> service) + [`../worker/`](../worker/README.md) (Cloudflare Worker) +
+> [`../ios-app/`](../ios-app/README.md) (BLE fallback transport).
 
-## What's different from firmware/
+## Highlights
 
 - **HTTPS** fetch from Cloudflare with bearer-token auth.
 - **End-to-end** X25519 + AES-256-GCM decryption of the bundle body.
@@ -18,8 +19,8 @@ access — home, phone hotspot, friend's WiFi.
   X25519 public key so you can paste it into the Pi push config.
 - **Battery telemetry over a separate Worker endpoint**: after each
   successful fetch, the X3 PUTs the BQ27220 voltage to `/battery` so the
-  Pi can read it back and synthesize the same battery panel the legacy
-  bridge did. See [Battery telemetry](#battery-telemetry) below.
+  Pi reads it back to synthesize a battery panel. See
+  [Battery telemetry](#battery-telemetry) below.
 - **Post-flash QR re-display**: on first boot after every firmware flash,
   the device renders the enrollment QR for 30 s (skippable by pressing
   power) so you can re-scan or re-copy the pubkey without wiping the
@@ -135,8 +136,7 @@ reads the BQ27220 voltage and PUTs `{"mv": <reading>}` to
 `https://dashboard.contexa.net/battery` with the same bearer token. The
 Worker appends to a rolling 7-day JSON history in R2; the Pi reads that
 history before each push and seeds it into the bundle so the
-synthetic **Battery (V)** panel renders identically to the legacy
-firmware. The PUT is best-effort — if it fails (network blip, Worker
+synthetic **Battery (V)** panel renders. The PUT is best-effort — if it fails (network blip, Worker
 hiccup) the bundle cycle still succeeds; we just miss one data point.
 
 ## Decryption (`src/bundle_seal.cpp`)
@@ -223,22 +223,24 @@ src/
 
 ## Submodule
 
-`firmware-cloud` does **not** have its own `lib/community-sdk` directory.
-Instead `platformio.ini` points at the sibling firmware's copy:
+`firmware-cloud/lib/community-sdk` is a git submodule pointing at a
+personal fork of `bcrpntr/crosspet-x3` with a small `markRedRamSynced()`
+patch that lets us trust the controller's RED RAM contents across
+deep-sleep cycles. `platformio.ini` references it via:
 
 ```ini
-EInkDisplay=symlink://../firmware/lib/community-sdk/libs/display/EInkDisplay
+EInkDisplay=symlink://lib/community-sdk/libs/display/EInkDisplay
 ```
 
-This keeps one source of truth for the SSD1677 driver across both
-firmwares. If you only want to clone this one variant, you'll still
-need the submodule (`git submodule update --init firmware/lib/community-sdk`).
+After cloning the repo, run
+`git submodule update --init firmware-cloud/lib/community-sdk` before
+building.
 
 ## Memory + flash
 
 - **Framebuffer**: 792 × 528 / 8 = 52,272 bytes in RAM.
-- **Flash**: ~1.2 MB / 3 MB. The crypto + multi-WiFi additions cost
-  about 50 KB over `firmware/`.
+- **Flash**: ~1.4 MB / 3 MB. NimBLE is the biggest single contributor
+  (~220 KB) on top of the crypto + multi-WiFi additions.
 - **RAM at runtime**: ~98 KB peak during a fetch (TLS + HTTPClient +
   sealed buf + plaintext buf + framebuffer). About 30 % of the C3's
   327 KB.

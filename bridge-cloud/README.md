@@ -1,15 +1,14 @@
-# bridge-cloud/ — Pi push service for cloud-relay mode
+# bridge-cloud/ — Pi push service
 
 Self-contained Python package that builds Grafana dashboard bundles,
 seals them with the X3's public key, and pushes them to a public
 Cloudflare Worker every 4 minutes. No inbound port on the Pi; the X3
 fetches the encrypted bundle from the Worker over whatever network it's
-on.
+on (Wi-Fi or, as a fallback, BLE via the iOS companion app).
 
-> Use this with [`../firmware-cloud/`](../firmware-cloud/README.md) and
-> [`../worker/`](../worker/README.md). For the home-LAN-only variant
-> (no encryption, no external dependencies), see [`../bridge/`](../bridge/README.md)
-> instead.
+> Pairs with [`../firmware-cloud/`](../firmware-cloud/README.md) (X3),
+> [`../worker/`](../worker/README.md) (Cloudflare Worker), and
+> [`../ios-app/`](../ios-app/README.md) (BLE fallback transport).
 
 ## When to use this
 
@@ -27,10 +26,10 @@ A systemd timer (`grafana-push.timer`) fires the service every 4 minutes:
 1. **Pull battery history** from the Worker's `/battery` endpoint — the
    X3 PUTs its BQ27220 voltage there after every fetch, and the Worker
    keeps a rolling 7 days. Empty list on the first run is fine.
-2. **Build the bundle in-process** via the same `Scheduler.render_bundle_once()`
-   code path as the legacy bridge — queries Grafana for each panel × view
-   window, validates, encodes. Seeds `scheduler.battery_history` with the
-   list from step 1 so the synthetic Battery (V) panel renders.
+2. **Build the bundle in-process** via `Scheduler.render_bundle_once()`
+   — queries Grafana for each panel × view window, validates, encodes.
+   Seeds `scheduler.battery_history` with the list from step 1 so the
+   synthetic Battery (V) panel renders.
 3. **Seal** the bundle for the X3 using a fresh ephemeral X25519 keypair
    per push (forward secrecy):
    - `shared = X25519(ephemeral_sk, x3_pk)`
@@ -69,13 +68,16 @@ gcm_decrypt err=-0x...` to catch this.
 
 ## Config
 
-Inherits the legacy bridge's panel config and Grafana token — no duplication:
-
 | Path | Purpose |
 |---|---|
-| `/etc/grafana-bridge/config.yaml` | Panel list, dashboard UIDs (same as legacy bridge) |
+| `/etc/grafana-bridge/config.yaml` | Panel list, dashboard UIDs (see `deploy/config.yaml.example`) |
 | `/etc/default/grafana-bridge` | `GRAFANA_TOKEN`, `GRAFANA_BRIDGE_CONFIG`, etc. |
 | `/etc/default/grafana-push` | Push-specific: `WORKER_BEARER_TOKEN`, `X3_PUBKEY_B64`, optional `WORKER_URL` override |
+
+The `/etc/grafana-bridge/` path is kept (rather than renamed to
+`grafana-push/`) because it was the install location of an earlier
+LAN-only FastAPI bridge that this service replaces; on existing
+deployments the panel config is already there and worth preserving.
 
 ## Deploy
 
@@ -87,12 +89,12 @@ ssh pibridge 'sudo bash /tmp/grafana-push-staging/deploy/install.sh /tmp/grafana
 ```
 
 The install script:
-- Stops + disables + removes the legacy `grafana-bridge.service` if present
-  (both architectures would otherwise query Grafana on overlapping timers).
 - Creates a `grafana-push` system user (read access to `/etc/grafana-bridge/`
   via supplementary group membership on `grafana-bridge`).
 - Installs the code to `/opt/grafana-push/` with its own venv.
 - Installs `grafana-push.service` + `grafana-push.timer`, enables the timer.
+- If an older `grafana-bridge.service` is present on disk, stops + removes
+  it (cleanup of a previous LAN-only deployment).
 
 After install, set the secrets:
 
@@ -122,13 +124,10 @@ python3 -m venv .venv
 
 Tests cover seal/unseal round-trip plus tamper-detection (Poly1305 fail-closed).
 
-## Relationship to bridge/
+## Notes
 
-This is a sister of `bridge/`, not a replacement at the file level. Files
-under `src/grafana_push/` (config, data, scheduler, render) were copied
-from `bridge/src/grafana_bridge/` and may diverge over time as the two
-deployment models evolve. `push.py` is the only file specific to this
-service — everything else exists in both packages.
-
-`app.py` (FastAPI) is intentionally absent. There's no long-running
-process and no HTTP listener.
+`config.py`, `data.py`, `scheduler.py`, and `render.py` are a trimmed
+copy of a defunct LAN-only FastAPI bridge that this service replaces.
+`push.py` is the entry point that's actually invoked. There's no
+long-running process and no HTTP listener; the scheduler module is used
+purely as a library for its `render_bundle_once()` code path.

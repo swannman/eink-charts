@@ -1,14 +1,16 @@
 # eink-charts
 
-Custom firmware + bridge service that turns an Xteink X3 3.68" e-paper
+Custom firmware + push service that turns an Xteink X3 3.68" e-paper
 display (ESP32-C3, 792×528, 1-bit, SSD1677) into a Grafana Cloud dashboard
-viewer.
+viewer that works **anywhere you have your phone**.
 
 The X3 wakes on a timer (or button press), fetches a pre-rendered bundle
-of chart data over Wi-Fi, draws the charts natively on the EPD, and goes
-back to deep sleep. Charts render in vector form on-device — no PNG
-decoding, no dithering — so they're crisp, the payload is tiny, and
-battery life is measured in weeks.
+of chart data either over Wi-Fi (HTTPS to a Cloudflare Worker) or BLE
+(from an iOS companion app when no Wi-Fi is reachable), decrypts it
+locally with its own X25519 private key, draws the charts natively on the
+EPD, and goes back to deep sleep. Charts render in vector form on-device
+— no PNG decoding, no dithering — so they're crisp, the payload is tiny,
+and battery life is measured in weeks.
 
 ## What it looks like
 
@@ -23,44 +25,56 @@ battery life is measured in weeks.
   the time window: 2h view refreshes every 5 min, 24h every 15 min, 7d
   every hour — finer windows want fresher data.
 - Quiet hours (22:00–06:00 local) suppress background Wi-Fi refreshes
+- A synthesized Battery (V) panel from BQ27220 readings the X3 posts back
+  via a separate Worker endpoint
+- A "Device Logs" screen (reachable via long-press list) showing the
+  device's recent serial-style output across deep-sleep cycles
 
-## Two architectures
+## Architecture
 
-There are two complete implementations in this repo. They share the bundle
-format and rendering, but the data path is different. Pick whichever fits
-how you want to use the display.
+```
+Grafana Cloud
+   │ PromQL via Grafana API
+   ▼
+Raspberry Pi  (bridge-cloud/, systemd timer every 4 min)
+   │ X25519-seal the bundle with the X3's public key
+   ▼
+Cloudflare Worker (worker/, R2-backed)  ── /bundle (encrypted)
+   │                                       /battery (plaintext voltages)
+   │
+   ├─ X3 over Wi-Fi (HTTPS):  primary path
+   │
+   └─ iOS app over BLE:       fallback when no Wi-Fi reachable
+       (ios-app/, fetches from Worker, relays bytes via BLE GATT)
+   │
+   ▼
+Xteink X3  (firmware-cloud/)
+   │ decrypt with X25519 private key (never leaves NVS)
+   │ render chart natively
+   ▼
+e-paper display
+```
 
-| | **Legacy (local)** | **Cloud (anywhere)** |
-|---|---|---|
-| Data path | X3 ← home WiFi ← Pi bridge | X3 ← any WiFi ← Cloudflare Worker ← Pi push |
-| Works away from home | No | Yes — including phone hotspot |
-| Inbound exposure on home net | Port 8080 to the Pi | None (push-only outbound) |
-| Encryption | None (LAN) | X25519 + AES-256-GCM end-to-end |
-| Multi-WiFi support | No | Yes, with per-network refresh floors |
-| Firmware | [`firmware/`](firmware/README.md) | [`firmware-cloud/`](firmware-cloud/README.md) |
-| Server | [`bridge/`](bridge/README.md) | [`bridge-cloud/`](bridge-cloud/README.md) + [`worker/`](worker/README.md) |
-
-Each subdirectory has its own README with build, deploy, and protocol
-details. The two architectures are mutually exclusive on a given Pi
-(both want to query Grafana on overlapping schedules); installing one
-disables the other.
+The bundle stays end-to-end encrypted throughout — Cloudflare and the
+iOS app both see only ciphertext. Only the X3 (which holds the private
+key it generated on first boot) can decrypt.
 
 ## Subdirectories
 
-- **[`firmware/`](firmware/README.md)** — ESP32-C3 firmware for the X3 that
-  fetches from a local Pi bridge. Pair with `bridge/`.
-- **[`firmware-cloud/`](firmware-cloud/README.md)** — ESP32-C3 firmware that
-  fetches encrypted bundles from a Cloudflare Worker. Multi-WiFi-aware,
-  first-boot QR-code enrollment, public-key crypto. Pair with `bridge-cloud/`
-  + `worker/`.
-- **[`bridge/`](bridge/README.md)** — original FastAPI service. Runs on
-  the Pi, serves the bundle at `GET /data/all` on port 8080.
-- **[`bridge-cloud/`](bridge-cloud/README.md)** — push-only service. Builds
-  the same bundle in-process, X25519-seals it for the X3, uploads to the
-  Cloudflare Worker every 4 minutes via systemd timer.
-- **[`worker/`](worker/README.md)** — Cloudflare Worker (TypeScript) that
-  proxies the encrypted bundle between R2 storage and clients. Auth via
-  bearer token; never sees plaintext.
+- **[`firmware-cloud/`](firmware-cloud/README.md)** — ESP32-C3 firmware for
+  the X3. Multi-WiFi credentials with per-network refresh floors, first-boot
+  QR-code key enrollment, X25519+AES-256-GCM decrypt, BLE peripheral
+  fallback when WiFi is unreachable.
+- **[`bridge-cloud/`](bridge-cloud/README.md)** — push-only service that
+  runs on a Raspberry Pi. Queries Grafana, builds the binary bundle, seals
+  it for the X3, uploads to the Cloudflare Worker every 4 minutes via a
+  systemd timer. No inbound ports.
+- **[`worker/`](worker/README.md)** — Cloudflare Worker (JS, deployed via
+  GitHub Actions). Two endpoints behind a bearer token: `/bundle` (sealed
+  blob, R2-backed) and `/battery` (rolling 7-day voltage history).
+- **[`ios-app/`](ios-app/README.md)** — Swift companion app, BLE central
+  in background mode. Wakes on the X3's advertisement, fetches the sealed
+  bundle from the Worker, forwards the bytes to the X3 over BLE GATT.
 
 ## References
 
@@ -69,7 +83,7 @@ research material only.
 
 - **[bcrpntr/crosspet-x3](https://github.com/bcrpntr/crosspet-x3)** (MIT) —
   The most complete community firmware for the X3. The eink display driver
-  in `firmware/lib/community-sdk` is bcrpntr's, included as a submodule.
+  in `firmware-cloud/lib/community-sdk` is bcrpntr's, included as a submodule.
   Source-of-truth for the SSD1677 init/LUTs, I²C pin map (BQ27220 + QMI8658
   on SCL=GPIO0/SDA=GPIO20), and how to keep the battery MOSFET held HIGH
   through deep sleep.
@@ -104,11 +118,9 @@ research material only.
   across three independent firmware codebases). Wake-on-motion via the
   IMU is not possible without a PCB mod; we use timer + power-button wake.
 - Battery: BQ27220 fuel gauge over I²C. Voltage at register `0x08`. The
-  local variant piggybacks the reading on every fetch via an
-  `X-Battery-MV` header; the cloud variant uses a separate `/battery`
-  Worker endpoint that the X3 PUTs to after each successful bundle fetch
-  (Pi reads it back to synthesize the same panel). Both produce a
-  synthetic Battery (V) panel.
+  X3 PUTs the reading to the Worker's `/battery` endpoint after each
+  successful bundle fetch; the Pi reads the rolling history back when
+  building the next bundle, producing a synthetic Battery (V) panel.
 
 ## License
 

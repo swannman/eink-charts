@@ -1,9 +1,0 @@
-; Copy to platformio.local.ini (gitignored) and fill in.
-; These build_flags get appended to env:xteink-x3's flags.
-; Escape quotes for shell + preprocessor.
-
-[env:xteink-x3]
-build_flags =
-    -DDEFAULT_WIFI_SSID=\"YourSSID\"
-    -DDEFAULT_WIFI_PASSWORD=\"YourPassword\"
-    -DDEFAULT_BRIDGE_URL=\"http://192.168.1.100:8080/frame\"
