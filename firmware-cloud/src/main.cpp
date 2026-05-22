@@ -16,6 +16,7 @@
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 
+#include "ble_bundle_receiver.h"
 #include "bundle_seal.h"
 #include "config.h"
 #include "demo_panel_data.h"
@@ -592,6 +593,11 @@ static uint8_t readBatterySoc() {
 // single put+get is atomic and easily fits the partition.
 constexpr const char* kBundleKey = "bundle";
 
+// Forward decl — defined just below fetchAndCacheBundleFromWorker.
+static bool cacheSealedBundle(const uint8_t* sealedBuf, size_t sealedLen,
+                              const uint8_t x3_sk[32], const uint8_t x3_pk[32],
+                              const char* uploaded_at, const char* source);
+
 // Pull the sealed bundle from the public Worker, decrypt with the device's
 // X25519 private key, validate the header, and store the plaintext in NVS.
 //
@@ -667,27 +673,38 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
     return false;
   }
 
+  bool ok = cacheSealedBundle(sealedBuf, sealedLen, x3_sk, x3_pk,
+                              uploadedAt.length() ? uploadedAt.c_str() : nullptr,
+                              /*source=*/"worker");
+  free(sealedBuf);
+  return ok;
+}
+
+// Decrypt a sealed bundle into plaintext, validate the header, and write
+// it to NVS as the new cached bundle. Shared between the worker fetch and
+// BLE fallback paths.
+static bool cacheSealedBundle(const uint8_t* sealedBuf, size_t sealedLen,
+                              const uint8_t x3_sk[32], const uint8_t x3_pk[32],
+                              const char* uploaded_at, const char* source) {
   size_t plaintextCap = sealedLen - bundle_seal::OVERHEAD_BYTES;
   uint8_t* plaintext = (uint8_t*)malloc(plaintextCap);
   if (!plaintext) {
-    Log.printf("worker: malloc(%u) for plaintext failed\n", (unsigned)plaintextCap);
-    free(sealedBuf);
+    Log.printf("%s: malloc(%u) for plaintext failed\n", source, (unsigned)plaintextCap);
     return false;
   }
   int plaintextLen = bundle_seal::unseal(x3_sk, x3_pk, sealedBuf, sealedLen,
                                          plaintext, plaintextCap);
-  free(sealedBuf);
   if (plaintextLen < 0) {
-    Log.println("worker: decrypt FAILED (wrong key, wire format mismatch, or tampered)");
+    Log.printf("%s: decrypt FAILED (wrong key, wire format mismatch, or tampered)\n",
+               source);
     free(plaintext);
     return false;
   }
-  Log.printf("worker: decrypted %d bytes (uploaded_at=%s)\n",
-                plaintextLen, uploadedAt.length() ? uploadedAt.c_str() : "?");
+  Log.printf("%s: decrypted %d bytes (uploaded_at=%s)\n",
+             source, plaintextLen, uploaded_at ? uploaded_at : "?");
 
-  // Validate bundle header (same as the prior bridge-fetch path used).
   if (plaintextLen < 4) {
-    Log.println("worker: plaintext too short for header");
+    Log.printf("%s: plaintext too short for header\n", source);
     free(plaintext);
     return false;
   }
@@ -695,34 +712,32 @@ static bool fetchAndCacheBundleFromWorker(const String& workerUrl,
   uint8_t version = plaintext[2];
   uint8_t panelCount = plaintext[3];
   if (magic != BUNDLE_MAGIC || version != BUNDLE_VERSION_REQUIRED || panelCount == 0) {
-    Log.printf("worker: bad bundle header magic=0x%04x ver=%u count=%u\n",
-                  magic, version, panelCount);
+    Log.printf("%s: bad bundle header magic=0x%04x ver=%u count=%u\n",
+               source, magic, version, panelCount);
     free(plaintext);
     return false;
   }
 
   Preferences prefs;
   if (!prefs.begin("x3-cache", false)) {
-    Log.println("worker: NVS open failed");
+    Log.printf("%s: NVS open failed\n", source);
     free(plaintext);
     return false;
   }
-  // Same explicit-remove pattern as before — NVS can't atomically swap a
-  // multi-KB blob, so update-in-place can silently fail.
   prefs.remove(kBundleKey);
   size_t wrote = prefs.putBytes(kBundleKey, plaintext, plaintextLen);
   prefs.putUInt("total", panelCount);
   size_t freeEntries = prefs.freeEntries();
   prefs.end();
   free(plaintext);
-  Log.printf("worker: NVS putBytes wrote=%u/%d freeEntries=%u\n",
-                (unsigned)wrote, plaintextLen, (unsigned)freeEntries);
+  Log.printf("%s: NVS putBytes wrote=%u/%d freeEntries=%u\n",
+             source, (unsigned)wrote, plaintextLen, (unsigned)freeEntries);
   if (wrote != (size_t)plaintextLen) {
-    Log.println("worker: NVS write FAILED — keeping prior cache");
+    Log.printf("%s: NVS write FAILED — keeping prior cache\n", source);
     return false;
   }
   rtcPanelTotal = panelCount;
-  Log.printf("worker: cached %d bytes, %u panels\n", plaintextLen, panelCount);
+  Log.printf("%s: cached %d bytes, %u panels\n", source, plaintextLen, panelCount);
   return true;
 }
 
@@ -1323,6 +1338,30 @@ void setup() {
       }
       WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
+    } else {
+      // All configured WiFi networks failed — fall back to BLE so the
+      // iOS companion app can hand off a fresh bundle. Tear down WiFi
+      // first since ESP32-C3 shares the 2.4 GHz radio.
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      // 32 KB allocation lives only across this fallback path; heap is
+      // safer than the stack given the size.
+      uint8_t* sealedBuf = (uint8_t*)malloc(ble_bundle_receiver::MAX_SEALED_BYTES);
+      if (sealedBuf) {
+        size_t sealedLen = 0;
+        if (ble_bundle_receiver::wait_for_bundle(
+                sealedBuf, ble_bundle_receiver::MAX_SEALED_BYTES,
+                &sealedLen, BLE_WAIT_TIMEOUT_MS)) {
+          if (cacheSealedBundle(sealedBuf, sealedLen, x3_sk, x3_pk,
+                                /*uploaded_at=*/nullptr, /*source=*/"ble")) {
+            fetchOk = true;
+            rtcLastFetchEpoch = time(nullptr);
+          }
+        }
+        free(sealedBuf);
+      } else {
+        Log.println("ble: malloc(MAX_SEALED_BYTES) failed");
+      }
     }
   }
 

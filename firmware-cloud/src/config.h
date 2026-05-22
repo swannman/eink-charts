@@ -95,6 +95,10 @@ constexpr uint32_t LIST_MODE_POLL_MS    = 50;       // ~20 Hz button polling
 
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
+// How long to wait for the iOS companion app after all WiFi attempts fail.
+// Long enough for iOS to wake the background app on a state-restoration
+// event; short enough to not drain the battery on a fallback-no-help cycle.
+constexpr uint32_t BLE_WAIT_TIMEOUT_MS = 30000;
 constexpr uint64_t DEFAULT_POLL_SECONDS = 3600;
 constexpr uint64_t WIFI_FAIL_RETRY_SECONDS = 60;
 
