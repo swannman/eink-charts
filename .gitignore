@@ -15,3 +15,13 @@ firmware-cloud/platformio.local.ini
 firmware-cloud/src/secrets.h
 firmware-cloud/.pio/
 firmware-cloud/.vscode/
+
+# Xcode build artifacts + the per-developer Config.swift (real bearer
+# token). Keep the template, exclude the filled-in copy.
+ios-app/EInkCharts/Config.swift
+ios-app/*.xcodeproj/
+ios-app/*.xcworkspace/
+ios-app/DerivedData/
+ios-app/build/
+*.xcuserstate
+xcuserdata/
