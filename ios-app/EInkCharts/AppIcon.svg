@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- E-paper warm-white background. Matches the actual color of the X3's display
+       so the icon previews what the app is bridging to. iOS will mask the corners. -->
+  <rect width="1024" height="1024" fill="#ebe5d4"/>
+
+  <!-- Subtle baseline grid, like the chart screens render on the X3. -->
+  <g stroke="#000" stroke-opacity="0.08" stroke-width="2">
+    <line x1="160" y1="320" x2="864" y2="320"/>
+    <line x1="160" y1="480" x2="864" y2="480"/>
+    <line x1="160" y1="640" x2="864" y2="640"/>
+    <line x1="160" y1="800" x2="864" y2="800"/>
+  </g>
+
+  <!-- Bold chart line, kept inside iOS's safe area (~140px from each edge). -->
+  <polyline
+    points="160,720 280,600 400,650 520,470 640,540 760,330 864,420"
+    fill="none"
+    stroke="#000"
+    stroke-width="60"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+
+  <!-- Red accent dot at the peak. The X3 is a black/white/red e-paper, so this
+       calls out the third color the display can actually render. -->
+  <circle cx="760" cy="330" r="46" fill="#d12626"/>
+</svg>

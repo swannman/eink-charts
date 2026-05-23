@@ -1,6 +1,6 @@
-// Debug-y status panel. The real work happens in the background; the
-// UI is only here so you can see what state the coordinator is in and
-// force a scan during development.
+// Status panel + scrolling activity log. The app does all real work in
+// the background; this view is so you can see what state the
+// coordinator is in and tail recent BLE events without attaching Xcode.
 
 import SwiftUI
 
@@ -37,16 +37,28 @@ struct ContentView: View {
                 }
             }
 
-            Button {
-                coordinator.startScan()
-            } label: {
-                Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+            GroupBox(label: Text("Activity").font(.headline)) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(coordinator.log.enumerated()), id: \.offset) { idx, line in
+                                Text(line)
+                                    .font(.caption2.monospaced())
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(idx)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                     .frame(maxWidth: .infinity)
+                    .onChange(of: coordinator.log.count) { _, _ in
+                        if let last = coordinator.log.indices.last {
+                            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                        }
+                    }
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-
-            Spacer()
+            .frame(maxHeight: .infinity)
 
             Text("This app forwards encrypted dashboard updates from Cloudflare to the X3 over Bluetooth when no Wi-Fi network is reachable. It runs in the background; you can normally close it.")
                 .font(.footnote)

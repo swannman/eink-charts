@@ -16,10 +16,12 @@ ios-app/
 └── EInkCharts/
     ├── EInkChartsApp.swift         # @main app entry, hosts BLECoordinator
     ├── BLECoordinator.swift        # CBCentralManager + state restoration + chunked GATT writes
-    ├── BundleFetcher.swift         # async GET /bundle from the Worker
-    ├── ContentView.swift           # minimal status panel
+    ├── BundleFetcher.swift         # async GET /bundle + PUT /battery on the Worker
+    ├── ContentView.swift           # status panel + scrolling activity log
     ├── Config.swift                # gitignored — bearer token + URLs (see template)
-    └── Config.template.swift       # committed template — copy to Config.swift
+    ├── Config.template.swift       # committed template — copy to Config.swift
+    ├── AppIcon.svg                 # source for the home-screen icon
+    └── Assets.xcassets/            # AppIcon set + AccentColor (Xcode template)
 ```
 
 There is no `Info.plist` checked in. Xcode 26 generates one at build
@@ -33,7 +35,9 @@ Xcode setup" below.
 
 1. **Xcode → File → New → Project → iOS → App.**
    - Product Name: `EInkCharts`
-   - Team: pick your Apple Developer Personal Team (or paid team)
+   - Team: prefer a paid Apple Developer Program team. Personal Team
+     works but provisioning profiles expire after 7 days; paid teams
+     get ~1 year with auto-renewal.
    - Organization Identifier: `net.contexa` (the Bundle Identifier
      becomes `net.contexa.einkcharts`)
    - Interface: SwiftUI
@@ -44,7 +48,8 @@ Xcode setup" below.
 3. **Replace the default source files.** Xcode auto-creates
    `ContentView.swift` and `EInkChartsApp.swift`; delete those and add
    the ones from this repo (drag them in from Finder, keep "Copy items
-   if needed" *unchecked* so they remain in the repo path).
+   if needed" *unchecked* so they remain in the repo path). Do the same
+   for `Assets.xcassets` so the home-screen icon picks up.
 4. **Info.plist (Xcode 26 auto-generated).** Leave
    `GENERATE_INFOPLIST_FILE = YES` (the default). In Build Settings, set:
    - `INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription` = `EInkCharts uses
@@ -52,6 +57,8 @@ Xcode setup" below.
      Wi-Fi isn't reachable.`
    - `INFOPLIST_KEY_UIBackgroundModes` = `bluetooth-central` (multi-value
      list, single entry).
+   - `INFOPLIST_KEY_CFBundleDisplayName` = `X3 Companion` (the home-screen
+     label; the bundle ID stays `net.contexa.einkcharts`).
 
    Do NOT commit a hand-written `Info.plist` and do NOT add one to the
    Copy Bundle Resources phase — Xcode 26 will complain about
@@ -99,7 +106,23 @@ After the write queue drains the app reads the X3's battery characteristic
 (`…9c81`, 2-byte LE u16 millivolts) and PUTs it to the Worker's `/battery`
 endpoint. The X3 can't reach the internet itself during a BLE cycle, so
 without this hop the synthetic battery panel would gap whenever the X3
-is away from Wi-Fi.
+is away from Wi-Fi. The firmware holds BLE alive for a 5 s grace window
+after receiving the bundle specifically so this read has time to land
+before teardown.
+
+## In-app activity log
+
+`ContentView` includes a scrolling **Activity** panel that mirrors every
+status line the coordinator emits (timestamps in `HH:mm:ss.SSS`). The
+same lines also go to the Xcode debug console via `print("[BLE] …")`, so
+you can tail a relay cycle either from inside the app or attached over
+USB. The log is a bounded ring buffer (~200 lines) so it doesn't grow
+unbounded across a long-running background session.
+
+There used to be a "Sync now" button. It was removed — iOS scans
+continuously when Bluetooth is on, and there's no BLE-from-central
+mechanism to wake the X3 on demand. The button gave the impression of
+control it didn't actually have.
 
 On `willRestoreState`: iOS hands back any peripherals we were tracking
 when we got suspended/killed. We re-adopt the delegate so the rest of

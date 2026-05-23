@@ -148,11 +148,9 @@ GATT layout:
 - Battery characteristic `…9c81` (read, 2-byte LE u16 millivolts)
 
 The battery characteristic carries the current BQ27220 reading, snapshotted
-before advertising starts. The iOS app reads it right after the bundle
-hand-off completes and PUTs it to the Worker's `/battery` endpoint, so
-the synthetic battery panel keeps updating during BLE-only cycles —
-otherwise telemetry would gap whenever the X3 is away from Wi-Fi. Value
-of 0 means "no reading available" (USB-powered, missing battery, dead gauge).
+before advertising starts. Value of 0 means "no reading available"
+(USB-powered, missing battery, dead gauge). See the description of the
+post-bundle grace window above for how the iOS app reads + forwards it.
 
 Wire format on the characteristic:
 - **First write**: 4-byte little-endian u32 total length, then up to 508
@@ -166,8 +164,14 @@ hand-off finishes inside a couple of seconds.
 
 The X3 accumulates into a single 32 KB heap buffer and treats the
 result identically to a Wi-Fi response — same decrypt path, same NVS
-cache, same render. After a successful BLE relay the X3 immediately
-goes back to deep sleep.
+cache, same render.
+
+Once the bundle is complete the X3 holds BLE alive for up to 5 s so
+the iOS central can read the battery characteristic (`…9c81`, u16 LE
+mV) and forward it to the Worker's `/battery` endpoint. The X3 has no
+internet during a BLE cycle, so without this hop the synthetic battery
+panel would gap. The grace window exits early as soon as the central
+disconnects.
 
 NimBLE notes for future debugging:
 - Uses `h2zero/NimBLE-Arduino@^2.3.0`. NimBLE-Arduino 1.x cannot be used

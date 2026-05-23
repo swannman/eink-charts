@@ -11,6 +11,8 @@ namespace ble_bundle_receiver {
 // the main side give us "publication" semantics without needing a mutex —
 // we only care that the flag flips and the bytes are present.
 static volatile bool g_bundle_received = false;
+static volatile bool g_peer_disconnected = false;
+static volatile bool g_battery_read = false;
 static uint8_t* g_out_buf = nullptr;
 static size_t g_out_cap = 0;
 static size_t g_out_len = 0;
@@ -86,6 +88,18 @@ class ConnCallbacks : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer* /*s*/, NimBLEConnInfo& /*connInfo*/, int /*reason*/) override {
     Log.println("ble: peer disconnected");
+    g_peer_disconnected = true;
+  }
+};
+
+// Fires when the central reads the battery characteristic. We track this
+// so the post-bundle grace window can exit early on read — if the central
+// doesn't care about the battery characteristic, we still bail out on
+// disconnect or after the grace window expires.
+class BatteryCharCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic* /*c*/, NimBLEConnInfo& /*connInfo*/) override {
+    Log.println("ble: battery characteristic read by peer");
+    g_battery_read = true;
   }
 };
 
@@ -93,6 +107,8 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
                      size_t* out_len, uint32_t timeout_ms,
                      uint16_t battery_mv) {
   g_bundle_received = false;
+  g_peer_disconnected = false;
+  g_battery_read = false;
   g_out_buf = out_buf;
   g_out_cap = (cap < MAX_SEALED_BYTES) ? cap : MAX_SEALED_BYTES;
   g_out_len = 0;
@@ -134,6 +150,8 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
       (uint8_t)((battery_mv >> 8) & 0xFF),
   };
   battery_char->setValue(battery_bytes, sizeof(battery_bytes));
+  static BatteryCharCallbacks bat_cb;
+  battery_char->setCallbacks(&bat_cb);
   Log.printf("ble: battery characteristic = %u mV\n", (unsigned)battery_mv);
 
   service->start();
@@ -154,6 +172,25 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
   if (ok) {
     *out_len = g_out_len;
     Log.printf("ble: bundle received OK (%u bytes)\n", (unsigned)g_out_len);
+
+    // Grace window so the iOS central can read the battery characteristic
+    // before we tear the stack down. Exits early on (a) iOS reading the
+    // battery and disconnecting cleanly, or (b) iOS disconnecting without
+    // reading. Worst case is the full grace duration, which is bounded.
+    Log.println("ble: grace window for battery read");
+    constexpr uint32_t POST_BUNDLE_GRACE_MS = 5000;
+    uint32_t grace_start = millis();
+    while ((millis() - grace_start) < POST_BUNDLE_GRACE_MS) {
+      if (g_peer_disconnected) {
+        Log.printf("ble: peer disconnected during grace (battery_read=%d)\n",
+                   g_battery_read ? 1 : 0);
+        break;
+      }
+      delay(50);
+    }
+    if (!g_peer_disconnected) {
+      Log.printf("ble: grace timeout (battery_read=%d)\n", g_battery_read ? 1 : 0);
+    }
   } else {
     Log.println("ble: timeout — no bundle received");
   }

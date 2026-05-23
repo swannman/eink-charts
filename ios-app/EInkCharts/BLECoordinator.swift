@@ -29,6 +29,23 @@ final class BLECoordinator: NSObject, ObservableObject {
     @Published var lastSync: Date?
     @Published var lastError: String?
     @Published var bluetoothEnabled = false
+    // Ring buffer of recent activity lines for the in-app log view. Same
+    // strings that get printed to the Xcode debug console — having them
+    // visible in-app means you don't need to be tethered to debug a
+    // relay cycle. Bounded so we don't grow unbounded across a long-
+    // running background session.
+    @Published var log: [String] = []
+    private let logCapacity = 200
+
+    // The enclosing class is @MainActor, which would otherwise isolate
+    // this static; mark it nonisolated so appendLog can format
+    // timestamps from the BLE queue. DateFormatter is Sendable in
+    // recent SDKs, so no `(unsafe)` needed.
+    nonisolated private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 
     // CB types are documented as thread-safe — Apple says you can call any
     // method on them from any context. Marking them nonisolated(unsafe)
@@ -57,25 +74,29 @@ final class BLECoordinator: NSObject, ObservableObject {
         )
     }
 
-    /// Tap target for the "Sync now" button. Real syncs happen automatically
-    /// via the scan/restore path; this just forces a fresh scan.
-    func startScan() {
-        guard central.state == .poweredOn else {
-            setStatus("Bluetooth off (\(stateString(central.state)))")
-            return
-        }
-        central.stopScan()
-        central.scanForPeripherals(withServices: [Config.bleServiceUUID], options: nil)
-        setStatus("Scanning for X3…")
-    }
-
     // Helpers callable from CB delegate methods (nonisolated context).
     // Each hops to the MainActor via Task to set the @Published state.
+    // appendLog drops the same line into the in-app log view and the
+    // Xcode debug console, so the relay is observable either way.
+    nonisolated private func appendLog(_ s: String) {
+        print("[BLE] \(s)")
+        let stamp = BLECoordinator.timestampFormatter.string(from: Date())
+        let line = "\(stamp)  \(s)"
+        Task { @MainActor in
+            self.log.append(line)
+            if self.log.count > self.logCapacity {
+                self.log.removeFirst(self.log.count - self.logCapacity)
+            }
+        }
+    }
+
     nonisolated private func setStatus(_ s: String) {
+        appendLog(s)
         Task { @MainActor in self.status = s }
     }
 
     nonisolated private func setError(_ s: String?) {
+        if let s = s { appendLog("ERROR: \(s)") }
         Task { @MainActor in self.lastError = s }
     }
 
@@ -202,6 +223,8 @@ extension BLECoordinator: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral,
                                 didDiscoverCharacteristicsFor service: CBService,
                                 error: Error?) {
+        let discovered = service.characteristics?.map { $0.uuid.uuidString } ?? []
+        appendLog("discovered characteristics: \(discovered)")
         guard let char = service.characteristics?.first(where: { $0.uuid == Config.bleCharacteristicUUID }) else {
             setError("Bundle characteristic missing")
             central.cancelPeripheralConnection(peripheral)
@@ -211,6 +234,7 @@ extension BLECoordinator: CBPeripheralDelegate {
         // — non-fatal). We'll read it after the bundle drains so we don't
         // race the write protocol.
         writeBatteryChar = service.characteristics?.first(where: { $0.uuid == Config.bleBatteryCharacteristicUUID })
+        appendLog("battery characteristic present? \(writeBatteryChar != nil)")
         // GATT caps a single write at 512 bytes (BLE_ATT_ATTR_MAX_LEN). The
         // X3 expects: first chunk = 4-byte LE u32 total length followed by
         // up to 508 bytes of bundle; subsequent chunks = up to 512 bytes
