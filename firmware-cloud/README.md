@@ -36,9 +36,6 @@ app) when no Wi-Fi is reachable.
 - **Proportional fonts** (Adafruit GFX FreeSans / FreeSansBold) for the
   connecting splash, enrollment QR screen, panel titles, and logs. The
   fixed-width 5x7 face is reserved for chart axis labels.
-- **Removed**: the local `/advance` POST and the `bridge_url` NVS key —
-  neither applies to the cloud flow.
-
 ## Controls
 
 - **Short-press POWER** → next panel (forward through the bundle's panels,

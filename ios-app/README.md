@@ -119,10 +119,10 @@ you can tail a relay cycle either from inside the app or attached over
 USB. The log is a bounded ring buffer (~200 lines) so it doesn't grow
 unbounded across a long-running background session.
 
-There used to be a "Sync now" button. It was removed — iOS scans
-continuously when Bluetooth is on, and there's no BLE-from-central
-mechanism to wake the X3 on demand. The button gave the impression of
-control it didn't actually have.
+The UI has no manual "sync" affordance because there's nothing the user
+could meaningfully trigger — iOS scans continuously when Bluetooth is on,
+and there's no BLE-from-central mechanism to wake the X3 on demand.
+Syncs happen automatically whenever the X3 advertises.
 
 On `willRestoreState`: iOS hands back any peripherals we were tracking
 when we got suspended/killed. We re-adopt the delegate so the rest of
@@ -162,4 +162,4 @@ and not in committed source.
 - [`../worker/`](../worker/README.md) — the Cloudflare Worker the iOS app
   fetches from.
 - [`../bridge-cloud/`](../bridge-cloud/README.md) — the Pi push service
-  that originally produces the sealed bundles.
+  that produces the sealed bundles.

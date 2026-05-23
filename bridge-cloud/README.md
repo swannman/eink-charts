@@ -74,10 +74,9 @@ gcm_decrypt err=-0x...` to catch this.
 | `/etc/default/grafana-bridge` | `GRAFANA_TOKEN`, `GRAFANA_BRIDGE_CONFIG`, etc. |
 | `/etc/default/grafana-push` | Push-specific: `WORKER_BEARER_TOKEN`, `X3_PUBKEY_B64`, optional `WORKER_URL` override |
 
-The `/etc/grafana-bridge/` path is kept (rather than renamed to
-`grafana-push/`) because it was the install location of an earlier
-LAN-only FastAPI bridge that this service replaces; on existing
-deployments the panel config is already there and worth preserving.
+The panel config lives at `/etc/grafana-bridge/` (not `/etc/grafana-push/`)
+so it stays decoupled from the push service that reads it — the same
+config file could be reused by other tooling without renaming.
 
 ## Deploy
 
@@ -93,8 +92,6 @@ The install script:
   via supplementary group membership on `grafana-bridge`).
 - Installs the code to `/opt/grafana-push/` with its own venv.
 - Installs `grafana-push.service` + `grafana-push.timer`, enables the timer.
-- If an older `grafana-bridge.service` is present on disk, stops + removes
-  it (cleanup of a previous LAN-only deployment).
 
 After install, set the secrets:
 
@@ -122,12 +119,11 @@ python3 -m venv .venv
 .venv/bin/pytest tests/
 ```
 
-Tests cover seal/unseal round-trip plus tamper-detection (Poly1305 fail-closed).
+Tests cover seal/unseal round-trip plus tamper-detection (GCM fail-closed).
 
 ## Notes
 
-`config.py`, `data.py`, `scheduler.py`, and `render.py` are a trimmed
-copy of a defunct LAN-only FastAPI bridge that this service replaces.
-`push.py` is the entry point that's actually invoked. There's no
-long-running process and no HTTP listener; the scheduler module is used
-purely as a library for its `render_bundle_once()` code path.
+`push.py` is the entry point invoked by the systemd timer.
+`config.py`, `data.py`, `scheduler.py`, and `render.py` back it as a
+library — there's no long-running process and no HTTP listener; the
+scheduler module is used purely for its `render_bundle_once()` code path.
