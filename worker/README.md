@@ -9,8 +9,9 @@ from the X3. Bound to R2 bucket `einkcharts-bundle`.
 **`/bundle`** — the main payload.
 
 - `PUT /bundle` — Pi pushes a sealed bundle (binary).
-- `GET /bundle` — X3 fetches the latest bundle. Supports `If-None-Match`
-  for 304s.
+- `GET /bundle` — X3 fetches the latest bundle directly when on Wi-Fi;
+  the iOS companion app fetches it on the X3's behalf during the BLE
+  fallback path. Supports `If-None-Match` for 304s.
 
 The bundle body is X25519 + AES-256-GCM sealed by the Pi before upload;
 the Worker only sees ciphertext, never holds the X3's private key, and

@@ -93,7 +93,10 @@ constexpr uint32_t LIST_MODE_POLL_MS    = 50;       // ~20 Hz button polling
 #define DEFAULT_WORKER_BEARER ""
 #endif
 
-constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
+// ~2.4s per internal STA scan cycle. 6s gives 2 attempts before falling
+// through to the BLE fallback — enough to handle a transient miss without
+// dragging out a guaranteed-failed cycle.
+constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
 // How long to wait for the iOS companion app after all WiFi attempts fail.
 // Long enough for iOS to wake the background app on a state-restoration

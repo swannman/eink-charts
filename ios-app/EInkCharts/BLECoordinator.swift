@@ -16,6 +16,7 @@
 // The whole thing is a singleton because there's only one BLE central
 // and iOS expects state restoration to find the same delegate object.
 
+import Combine
 import CoreBluetooth
 import Foundation
 import SwiftUI
@@ -29,9 +30,18 @@ final class BLECoordinator: NSObject, ObservableObject {
     @Published var lastError: String?
     @Published var bluetoothEnabled = false
 
-    private var central: CBCentralManager!
-    private var pendingPeripheral: CBPeripheral?
+    // CB types are documented as thread-safe — Apple says you can call any
+    // method on them from any context. Marking them nonisolated(unsafe)
+    // lets the CBPeripheralDelegate methods (which run on the BLE queue,
+    // not MainActor) cancel/connect without bouncing through Task.
+    nonisolated(unsafe) private var central: CBCentralManager!
+    nonisolated(unsafe) private var pendingPeripheral: CBPeripheral?
     private var bundleData: Data?
+    // State for the chunked write protocol. didWriteValueFor uses these
+    // to advance to the next chunk until everything has been sent.
+    nonisolated(unsafe) private var writeQueue: Data = Data()
+    nonisolated(unsafe) private var writeChar: CBCharacteristic?
+    nonisolated(unsafe) private var writeTotalBytes: Int = 0
 
     private override init() {
         super.init()
@@ -58,23 +68,25 @@ final class BLECoordinator: NSObject, ObservableObject {
         setStatus("Scanning for X3…")
     }
 
-    private func setStatus(_ s: String) {
+    // Helpers callable from CB delegate methods (nonisolated context).
+    // Each hops to the MainActor via Task to set the @Published state.
+    nonisolated private func setStatus(_ s: String) {
         Task { @MainActor in self.status = s }
     }
 
-    private func setError(_ s: String?) {
+    nonisolated private func setError(_ s: String?) {
         Task { @MainActor in self.lastError = s }
     }
 
-    private func setBluetoothEnabled(_ b: Bool) {
+    nonisolated private func setBluetoothEnabled(_ b: Bool) {
         Task { @MainActor in self.bluetoothEnabled = b }
     }
 
-    private func markSynced() {
+    nonisolated private func markSynced() {
         Task { @MainActor in self.lastSync = Date() }
     }
 
-    private func stateString(_ s: CBManagerState) -> String {
+    nonisolated private func stateString(_ s: CBManagerState) -> String {
         switch s {
         case .poweredOn:    return "on"
         case .poweredOff:   return "off"
@@ -166,6 +178,9 @@ extension BLECoordinator: CBCentralManagerDelegate {
             self.pendingPeripheral = nil
             self.bundleData = nil
         }
+        writeQueue = Data()
+        writeChar = nil
+        writeTotalBytes = 0
         central.scanForPeripherals(withServices: [Config.bleServiceUUID], options: nil)
     }
 }
@@ -188,16 +203,44 @@ extension BLECoordinator: CBPeripheralDelegate {
             central.cancelPeripheralConnection(peripheral)
             return
         }
-        // Snapshot the buffer off the main actor before crossing nonisolated.
+        // GATT caps a single write at 512 bytes (BLE_ATT_ATTR_MAX_LEN). The
+        // X3 expects: first chunk = 4-byte LE u32 total length followed by
+        // up to 508 bytes of bundle; subsequent chunks = up to 512 bytes
+        // each. Stage the full byte stream (prefix + bundle) and let
+        // didWriteValueFor drain it one write at a time.
         Task { @MainActor in
             guard let data = self.bundleData else {
                 self.setError("Bundle missing at write time")
                 self.central.cancelPeripheralConnection(peripheral)
                 return
             }
-            self.setStatus("Writing \(data.count) bytes to X3…")
-            peripheral.writeValue(data, for: char, type: .withResponse)
+            let total = UInt32(data.count).littleEndian
+            var queue = Data(capacity: 4 + data.count)
+            withUnsafeBytes(of: total) { queue.append(contentsOf: $0) }
+            queue.append(data)
+            self.writeQueue = queue
+            self.writeChar = char
+            self.writeTotalBytes = data.count
+            self.setStatus("Writing \(data.count) bytes to X3 (chunked)…")
+            self.writeNextChunk(peripheral: peripheral)
         }
+    }
+
+    nonisolated private func writeNextChunk(peripheral: CBPeripheral) {
+        // Run on the BLE queue (nonisolated context). We only touch
+        // writeQueue/writeChar from here and didWriteValueFor, both of
+        // which run on that same queue — so the nonisolated(unsafe) is OK.
+        guard let char = writeChar else { return }
+        if writeQueue.isEmpty {
+            markSynced()
+            setStatus("Delivered. Disconnecting.")
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
+        let chunkSize = min(writeQueue.count, 512)
+        let chunk = writeQueue.prefix(chunkSize)
+        writeQueue.removeFirst(chunkSize)
+        peripheral.writeValue(Data(chunk), for: char, type: .withResponse)
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,
@@ -206,10 +249,12 @@ extension BLECoordinator: CBPeripheralDelegate {
         if let error = error {
             setError("Write failed: \(error.localizedDescription)")
             setStatus("Write failed")
-        } else {
-            markSynced()
-            setStatus("Delivered. Disconnecting.")
+            central.cancelPeripheralConnection(peripheral)
+            return
         }
-        central.cancelPeripheralConnection(peripheral)
+        let remaining = writeQueue.count
+        let sent = writeTotalBytes + 4 - remaining
+        setStatus("Sent \(sent) / \(writeTotalBytes + 4) bytes…")
+        writeNextChunk(peripheral: peripheral)
     }
 }

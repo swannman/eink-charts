@@ -15,13 +15,15 @@ ios-app/
 ├── README.md                       # this file
 └── EInkCharts/
     ├── EInkChartsApp.swift         # @main app entry, hosts BLECoordinator
-    ├── BLECoordinator.swift        # CBCentralManager + state restoration + GATT write
+    ├── BLECoordinator.swift        # CBCentralManager + state restoration + chunked GATT writes
     ├── BundleFetcher.swift         # async GET /bundle from the Worker
     ├── ContentView.swift           # minimal status panel
     ├── Config.swift                # gitignored — bearer token + URLs (see template)
-    ├── Config.template.swift       # committed template — copy to Config.swift
-    └── Info.plist                  # bluetooth-central background mode + usage description
+    └── Config.template.swift       # committed template — copy to Config.swift
 ```
+
+There is no `Info.plist` checked in. Xcode 26 generates one at build
+time from build settings — see step 4 below.
 
 There's no Xcode project committed (the .pbxproj is a moving target that
 diff-merges badly). Create the project once locally; see "First-time
@@ -43,17 +45,30 @@ Xcode setup" below.
    `ContentView.swift` and `EInkChartsApp.swift`; delete those and add
    the ones from this repo (drag them in from Finder, keep "Copy items
    if needed" *unchecked* so they remain in the repo path).
-4. **Wire up the Info.plist.** Easiest path: open the target → Info tab
-   → set `Custom iOS Target Properties` to match `Info.plist`. Or set
-   `INFOPLIST_FILE = ios-app/EInkCharts/Info.plist` in Build Settings and
-   disable Xcode's auto-generated Info.plist.
+4. **Info.plist (Xcode 26 auto-generated).** Leave
+   `GENERATE_INFOPLIST_FILE = YES` (the default). In Build Settings, set:
+   - `INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription` = `EInkCharts uses
+     Bluetooth to deliver dashboard updates to the e-paper display when
+     Wi-Fi isn't reachable.`
+   - `INFOPLIST_KEY_UIBackgroundModes` = `bluetooth-central` (multi-value
+     list, single entry).
+
+   Do NOT commit a hand-written `Info.plist` and do NOT add one to the
+   Copy Bundle Resources phase — Xcode 26 will complain about
+   "Multiple commands produce Info.plist".
 5. **Signing & Capabilities → Capabilities → Background Modes →** check
-   **Uses Bluetooth LE accessories**.
-6. **Copy `Config.template.swift` to `Config.swift`** and paste the same
+   **Uses Bluetooth LE accessories** (this is the same setting as the
+   `UIBackgroundModes = [bluetooth-central]` build setting above; Xcode
+   keeps them in sync).
+6. **Target Membership for `Config.template.swift`**: in the File
+   Inspector for that file, **uncheck** the EInkCharts target — otherwise
+   you'll get `Invalid redeclaration of 'Config'` once you add the real
+   `Config.swift`.
+7. **Copy `Config.template.swift` to `Config.swift`** and paste the same
    bearer token used by the X3 firmware (`DEFAULT_WORKER_BEARER` in
    `firmware-cloud/src/secrets.h`) and the Pi push service
    (`WORKER_BEARER_TOKEN` in `/etc/default/grafana-push`).
-7. **Build + run on a physical iPhone.** The simulator doesn't have a
+8. **Build + run on a physical iPhone.** The simulator doesn't have a
    BLE radio. First launch will prompt for Bluetooth permission.
 
 ## How it works
@@ -69,10 +84,16 @@ On `didDiscover`:
 2. Fetch the sealed bundle from the Worker via `BundleFetcher`.
 3. Connect to the peripheral.
 4. Discover the bundle service + characteristic.
-5. Write the sealed bytes (`type: .withResponse` so iOS handles long-write
-   chunking automatically when the bundle exceeds MTU).
-6. Disconnect on write completion.
+5. **Chunked write**: GATT caps a single attribute value at 512 bytes,
+   so the app stages a byte queue of `[4-byte LE total length][bundle…]`,
+   then drains it 512 bytes per write-with-response, waiting on
+   `didWriteValueFor` between writes. The X3 reads the length prefix
+   on the first write and accumulates until it has the declared total.
+6. Disconnect on queue drain.
 7. Resume scanning.
+
+For an 18 KB bundle that's ~37 round trips, finishing in a couple of
+seconds at typical iOS BLE connection intervals.
 
 On `willRestoreState`: iOS hands back any peripherals we were tracking
 when we got suspended/killed. We re-adopt the delegate so the rest of

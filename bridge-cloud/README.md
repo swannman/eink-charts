@@ -62,7 +62,7 @@ from Cloudflare can't be retroactively decrypted — they're each tied to
 a one-shot ephemeral that's destroyed after the push completes.
 
 If the Pi's input copy of `X3_PUBKEY_B64` is wrong (typo, wrong device),
-the X3 will fail to decrypt — Poly1305 tag mismatch — and the bundle
+the X3 will fail to decrypt — GCM tag mismatch — and the bundle
 cache won't update. Watch the X3's serial log for `bundle_seal:
 gcm_decrypt err=-0x...` to catch this.
 

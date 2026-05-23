@@ -14,34 +14,77 @@ static volatile bool g_bundle_received = false;
 static uint8_t* g_out_buf = nullptr;
 static size_t g_out_cap = 0;
 static size_t g_out_len = 0;
+// 0 until we've seen the first write (which carries a 4-byte LE u32
+// length prefix). Then it's the declared total bundle size.
+static uint32_t g_expected_len = 0;
 
-// NimBLE-Arduino 1.x callback signatures (no NimBLEConnInfo param —
-// that's a 2.x addition).
+// Per-attribute max BLE value length. 512 is the GATT spec ceiling
+// (BLE_ATT_ATTR_MAX_LEN). The iOS side chunks the bundle to fit.
+static constexpr uint16_t BUNDLE_ATTR_MAX_LEN = 512;
+
+// NimBLE-Arduino 2.x callback signatures. The 2.x line is required on
+// Arduino-ESP32 3.x (pioarduino 55.x) because the IDF already ships a
+// NimBLE host — bundling our own (1.4.x behavior) double-links the host
+// and lands controller→host vtables with NULL entries, crashing in
+// btdm_controller_init.
 class BundleCharCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* c) override {
+  // Each GATT write delivers up to BUNDLE_ATTR_MAX_LEN bytes. iOS prepends
+  // a 4-byte LE u32 total-length to the first chunk; subsequent chunks are
+  // raw bundle bytes. We accumulate into g_out_buf until we've seen the
+  // declared total.
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& /*connInfo*/) override {
     if (g_bundle_received) {
-      // Ignore writes after we already accepted one — keeps the data race
-      // window tiny and the main loop the sole reader.
       return;
     }
-    const std::string& v = c->getValue();
-    const size_t n = v.length();
-    Log.printf("ble: onWrite n=%u\n", (unsigned)n);
-    if (n < 60 || n > g_out_cap) {
-      Log.printf("ble: rejecting (size out of range, cap=%u)\n", (unsigned)g_out_cap);
+    NimBLEAttValue v = c->getValue();
+    const uint8_t* data = v.data();
+    size_t n = v.length();
+
+    if (g_expected_len == 0) {
+      if (n < 4) {
+        Log.printf("ble: first chunk too short (%u bytes)\n", (unsigned)n);
+        return;
+      }
+      g_expected_len = (uint32_t)data[0] |
+                      ((uint32_t)data[1] << 8) |
+                      ((uint32_t)data[2] << 16) |
+                      ((uint32_t)data[3] << 24);
+      if (g_expected_len < 60 || g_expected_len > g_out_cap) {
+        Log.printf("ble: rejecting (declared len=%u out of range, cap=%u)\n",
+                   (unsigned)g_expected_len, (unsigned)g_out_cap);
+        g_expected_len = 0;
+        return;
+      }
+      Log.printf("ble: receive start, expecting %u bytes\n", (unsigned)g_expected_len);
+      data += 4;
+      n -= 4;
+    }
+
+    if (g_out_len + n > g_expected_len) {
+      Log.printf("ble: chunk overruns (have=%u +%u > expected=%u) — resetting\n",
+                 (unsigned)g_out_len, (unsigned)n, (unsigned)g_expected_len);
+      g_expected_len = 0;
+      g_out_len = 0;
       return;
     }
-    memcpy(g_out_buf, v.data(), n);
-    g_out_len = n;
-    g_bundle_received = true;
+
+    memcpy(g_out_buf + g_out_len, data, n);
+    g_out_len += n;
+    Log.printf("ble: chunk %u bytes, total %u/%u\n",
+               (unsigned)n, (unsigned)g_out_len, (unsigned)g_expected_len);
+
+    if (g_out_len == g_expected_len) {
+      Log.println("ble: bundle complete");
+      g_bundle_received = true;
+    }
   }
 };
 
 class ConnCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer* /*s*/) override {
+  void onConnect(NimBLEServer* /*s*/, NimBLEConnInfo& /*connInfo*/) override {
     Log.println("ble: peer connected");
   }
-  void onDisconnect(NimBLEServer* /*s*/) override {
+  void onDisconnect(NimBLEServer* /*s*/, NimBLEConnInfo& /*connInfo*/, int /*reason*/) override {
     Log.println("ble: peer disconnected");
   }
 };
@@ -52,6 +95,7 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
   g_out_buf = out_buf;
   g_out_cap = (cap < MAX_SEALED_BYTES) ? cap : MAX_SEALED_BYTES;
   g_out_len = 0;
+  g_expected_len = 0;
 
   Log.printf("ble: starting peripheral, advertising for up to %ums\n",
              (unsigned)timeout_ms);
@@ -71,7 +115,8 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
   NimBLEService* service = server->createService(SERVICE_UUID);
   NimBLECharacteristic* bundle_char = service->createCharacteristic(
       CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::WRITE);
+      NIMBLE_PROPERTY::WRITE,
+      BUNDLE_ATTR_MAX_LEN);
   static BundleCharCallbacks ch_cb;
   bundle_char->setCallbacks(&ch_cb);
   service->start();
@@ -96,9 +141,11 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
     Log.println("ble: timeout — no bundle received");
   }
 
-  // Teardown. NimBLEDevice::deinit(true) frees memory so we don't carry
-  // BLE state into deep sleep.
-  NimBLEDevice::deinit(/*clearAll=*/true);
+  // Teardown. deinit(true) is the natural choice but NimBLE-Arduino 2.5.0
+  // asserts in heap_caps_free during full teardown (it tries to free a
+  // static buffer). deinit(false) just stops the stack — the chip enters
+  // deep sleep right after, which wipes RAM, so the leak is academic.
+  NimBLEDevice::deinit(/*clearAll=*/false);
   return ok;
 }
 

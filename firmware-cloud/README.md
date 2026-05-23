@@ -17,6 +17,11 @@ app) when no Wi-Fi is reachable.
   own minimum refresh interval (e.g. 5 min on home, 1 h on phone).
 - **First-boot enrollment** screen rendering a QR code of the device's
   X25519 public key so you can paste it into the Pi push config.
+- **BLE peripheral fallback** when no configured WiFi is in range: the
+  X3 advertises a custom GATT service; the iOS companion app fetches the
+  sealed bundle from the Worker and pushes the bytes over BLE. The X3
+  decrypts the same way regardless of which transport delivered the
+  ciphertext. See [BLE fallback](#ble-fallback) below.
 - **Battery telemetry over a separate Worker endpoint**: after each
   successful fetch, the X3 PUTs the BQ27220 voltage to `/battery` so the
   Pi reads it back to synthesize a battery panel. See
@@ -129,6 +134,44 @@ Useful for diagnosing issues away from a serial monitor — e.g., did the
 X3 actually fall back to phone hotspot, did the fetch decrypt cleanly,
 how long did the cycle take.
 
+## BLE fallback
+
+When `wifi_config::connect_any()` returns no association (away from any
+configured network, or all configured APs unreachable), the firmware
+tears down WiFi and brings up a BLE peripheral for up to 30 s. The X3
+never initiates network IO over BLE — it's strictly a transport that
+the iOS companion app drives.
+
+GATT layout:
+- Service `0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c7f`
+- Characteristic `0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c80` (write-with-response)
+
+Wire format on the characteristic:
+- **First write**: 4-byte little-endian u32 total length, then up to 508
+  bytes of the sealed bundle.
+- **Subsequent writes**: up to 512 bytes of bundle bytes each, in order.
+
+The 512-byte ceiling is the GATT spec maximum attribute length
+(`BLE_ATT_ATTR_MAX_LEN`). For an 18 KB bundle, that's ~37 round trips;
+even on a 7.5 ms connection interval with one ack per write, the whole
+hand-off finishes inside a couple of seconds.
+
+The X3 accumulates into a single 32 KB heap buffer and treats the
+result identically to a Wi-Fi response — same decrypt path, same NVS
+cache, same render. After a successful BLE relay the X3 immediately
+goes back to deep sleep.
+
+NimBLE notes for future debugging:
+- Uses `h2zero/NimBLE-Arduino@^2.3.0`. NimBLE-Arduino 1.x cannot be used
+  with Arduino-ESP32 3.x / IDF 5.x — the IDF already ships a NimBLE host,
+  and 1.x double-links its own, leaving NULL function pointers in the
+  controller→host vtable (manifests as a guru meditation at PC=0 inside
+  `btdm_controller_init`).
+- `NimBLEDevice::deinit(/*clearAll=*/false)` is intentional: 2.5.0's
+  `deinit(true)` triggers a `heap_caps_free` assert on a static buffer.
+  The chip enters deep sleep right after, which wipes RAM, so any leak
+  is academic.
+
 ## Battery telemetry
 
 After each successful bundle fetch (while WiFi is still up), the firmware
@@ -196,9 +239,12 @@ deep sleep cycles.
 6. If fetching: try each WiFi network in priority order until one
    connects. If the connected network's floor is met, HTTPS GET the
    Worker, decrypt, validate header, store plaintext in NVS cache.
-7. Render the current screen from the NVS cache (chart, stat group, or
+7. If WiFi found no networks, fall back to the BLE peripheral and wait
+   up to 30 s for the iOS app to push a chunked bundle. Same decrypt +
+   cache path on success.
+8. Render the current screen from the NVS cache (chart, stat group, or
    list view if long-press was held).
-8. Deep sleep for `currentRefreshInterval()` (or until 06:00 if entering
+9. Deep sleep for `currentRefreshInterval()` (or until 06:00 if entering
    quiet hours).
 
 ## Source layout
@@ -212,6 +258,7 @@ src/
 ├── x25519_keystore.{h,cpp}   # mbedTLS keygen + NVS persistence + b64url
 ├── enroll_screen.{h,cpp}     # first-boot QR + visible-text screen
 ├── wifi_config.{h,cpp}       # multi-network loader + connect_any()
+├── ble_bundle_receiver.{h,cpp}  # NimBLE peripheral, chunked write accumulator
 ├── log_buffer.{h,cpp}        # RTC ring buffer + MirrorPrint subclass
 ├── panel_model.h             # PanelData / StatEntry / drawLogsScreen
 ├── panel_renderer.cpp        # drawPanel / drawStatScreen / drawListView / drawLogsScreen

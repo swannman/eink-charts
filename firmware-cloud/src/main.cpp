@@ -210,6 +210,23 @@ static void paintConnectingScreen(const String& ssid, uint32_t cycle) {
   display.displayBuffer(EInkDisplay::FAST_REFRESH, /*turnOffScreen=*/false);
 }
 
+// Painted by paintBootStatus(). Belongs to the area below the SSID + above
+// the footer that paintConnectingScreen intentionally leaves blank.
+constexpr int SPLASH_STATUS_Y = 410;
+constexpr int SPLASH_STATUS_H = 28;
+static bool g_splashPainted = false;
+
+// Repaint just the status sub-line on the splash and push a partial refresh.
+// No-op if the splash isn't currently on screen (e.g., a normal cycle where
+// the previous panel is still visible behind the fetch).
+static void paintBootStatus(const char* msg) {
+  if (!g_splashPainted) return;
+  uint8_t* fb = display.getFrameBuffer();
+  fbFillRect(fb, 0, SPLASH_STATUS_Y, FB_WIDTH, SPLASH_STATUS_H, /*black=*/false);
+  fbDrawStringGfxCentered(fb, SPLASH_STATUS_Y + 20, &FreeSans9pt7b, msg, /*black=*/true);
+  display.displayWindow(0, SPLASH_STATUS_Y, FB_WIDTH, SPLASH_STATUS_H, /*turnOff=*/false);
+}
+
 // Wake on the power button (GPIO3 going LOW). TRMNL on the X4 (same C3
 // silicon, same hardware family) ships with this exact wake source.
 constexpr uint64_t POWER_BUTTON_WAKE_MASK = 1ULL << POWER_BUTTON_GPIO;
@@ -1053,6 +1070,21 @@ static bool runListMode(uint32_t& out_idx) {
 
 void setup() {
   Serial.begin(115200);
+
+  // Dump the persisted RTC log buffer immediately. Anyone with a serial
+  // monitor attached gets context from previous wakes; the divider lets
+  // them distinguish history from this cycle's fresh output. Bypasses
+  // Log so the dump itself doesn't get re-buffered (which would double
+  // the buffer's history every cycle).
+  {
+    static uint8_t dumpBuf[log_buffer::SIZE];
+    size_t dumpLen = log_buffer::snapshot(dumpBuf);
+    Serial.println();
+    Serial.println("=== persisted log buffer (RTC, since last cold boot) ===");
+    if (dumpLen > 0) Serial.write(dumpBuf, dumpLen);
+    Serial.println("=== end persisted log buffer; new lines below ===");
+  }
+
   // Re-enable the battery rail before anything else — the MOSFET hold from
   // the previous deep sleep needs to be released and re-asserted.
   enableBatteryRail();
@@ -1304,17 +1336,29 @@ void setup() {
   bool wifiOk = false;
   bool fetchOk = false;
   if (needFetch) {
+    // Pre-warm the WiFi radio BEFORE painting the splash. Setting the
+    // mode here kicks off async driver init (the STA_START event fires
+    // a few hundred ms later); the e-ink refresh that follows takes
+    // ~800 ms, so by the time connect_any() runs the radio is settled.
+    // Without this prewarm, the first post-flash boot races driver init
+    // and the initial WiFi.begin() can come back as a hard "no AP" even
+    // though it would succeed a second later.
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+
     if (rtcLastFetchEpoch == 0) {
       // First boot splash. With multi-network we don't know which one will
       // connect — show the first configured ssid (best guess) or a generic.
       paintConnectingScreen(
           wifiNets.empty() ? String("(no WiFi configured)") : wifiNets[0].ssid,
           rtcCycleCount);
+      g_splashPainted = true;
     }
     wifi_config::ConnectResult wc =
         wifi_config::connect_any(wifiNets, WIFI_CONNECT_TIMEOUT_MS);
     wifiOk = wc.ok;
     if (wifiOk) {
+      paintBootStatus("Connected. Fetching bundle…");
       // Per-network floor check: skip the actual fetch if this network's
       // minimum hasn't elapsed yet (e.g. on phone hotspot with 1h floor and
       // only 5 min since last fetch). Note: still costs a connect attempt,
@@ -1327,9 +1371,12 @@ void setup() {
         fetchOk = fetchAndCacheBundleFromWorker(workerUrl, workerBearer, x3_sk, x3_pk);
         if (fetchOk) {
           rtcLastFetchEpoch = time(nullptr);
+          paintBootStatus("Got bundle. Rendering…");
           // Piggyback battery telemetry while WiFi is still up.
           uint16_t batteryMv = readBatteryMv();
           postBatteryReadingToWorker(workerUrl, workerBearer, batteryMv);
+        } else {
+          paintBootStatus("Fetch/decrypt failed");
         }
       } else {
         Log.printf("wifi: '%s' floor not met (%llds < %us); skipping fetch this cycle\n",
@@ -1344,6 +1391,7 @@ void setup() {
       // first since ESP32-C3 shares the 2.4 GHz radio.
       WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
+      paintBootStatus("No Wi-Fi. Waiting for phone over Bluetooth…");
       // 32 KB allocation lives only across this fallback path; heap is
       // safer than the stack given the size.
       uint8_t* sealedBuf = (uint8_t*)malloc(ble_bundle_receiver::MAX_SEALED_BYTES);
@@ -1352,11 +1400,14 @@ void setup() {
         if (ble_bundle_receiver::wait_for_bundle(
                 sealedBuf, ble_bundle_receiver::MAX_SEALED_BYTES,
                 &sealedLen, BLE_WAIT_TIMEOUT_MS)) {
+          paintBootStatus("Got bundle over Bluetooth. Rendering…");
           if (cacheSealedBundle(sealedBuf, sealedLen, x3_sk, x3_pk,
                                 /*uploaded_at=*/nullptr, /*source=*/"ble")) {
             fetchOk = true;
             rtcLastFetchEpoch = time(nullptr);
           }
+        } else {
+          paintBootStatus("No phone reachable over Bluetooth");
         }
         free(sealedBuf);
       } else {
