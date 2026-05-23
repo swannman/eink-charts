@@ -19,9 +19,10 @@ can't decrypt.
 
 **`/battery`** — small JSON telemetry channel.
 
-- `PUT /battery` — X3 posts `{"mv": <int>}` after each successful bundle
-  fetch. The Worker appends `{ts, mv}` to a JSON array stored at R2 key
-  `battery_history` and prunes entries older than 7 days.
+- `PUT /battery` — X3 posts `{"mv": <int>}` after each successful Wi-Fi
+  fetch; the iOS companion app posts on the X3's behalf after each
+  successful BLE relay. The Worker appends `{ts, mv}` to a JSON array
+  stored at R2 key `battery_history` and prunes entries older than 7 days.
 - `GET /battery` — Pi reads the array before each bundle build and seeds
   it into the synthetic battery panel. Returns `[]` if empty.
 

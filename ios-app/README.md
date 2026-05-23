@@ -95,6 +95,12 @@ On `didDiscover`:
 For an 18 KB bundle that's ~37 round trips, finishing in a couple of
 seconds at typical iOS BLE connection intervals.
 
+After the write queue drains the app reads the X3's battery characteristic
+(`…9c81`, 2-byte LE u16 millivolts) and PUTs it to the Worker's `/battery`
+endpoint. The X3 can't reach the internet itself during a BLE cycle, so
+without this hop the synthetic battery panel would gap whenever the X3
+is away from Wi-Fi.
+
 On `willRestoreState`: iOS hands back any peripherals we were tracking
 when we got suspended/killed. We re-adopt the delegate so the rest of
 the lifecycle keeps working.

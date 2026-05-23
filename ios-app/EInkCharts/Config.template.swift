@@ -9,5 +9,6 @@ enum Config {
     static let workerBearer = "PUT-YOUR-BEARER-TOKEN-HERE"
     static let bleServiceUUID        = CBUUID(string: "0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c7f")
     static let bleCharacteristicUUID = CBUUID(string: "0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c80")
+    static let bleBatteryCharacteristicUUID = CBUUID(string: "0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c81")
     static let bleRestoreIdentifier = "net.contexa.einkcharts.central"
 }

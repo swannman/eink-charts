@@ -1397,9 +1397,13 @@ void setup() {
       uint8_t* sealedBuf = (uint8_t*)malloc(ble_bundle_receiver::MAX_SEALED_BYTES);
       if (sealedBuf) {
         size_t sealedLen = 0;
+        // Snapshot the BQ27220 reading so the iOS app can forward it to
+        // the Worker's /battery endpoint — bridges the telemetry gap
+        // that exists during BLE-only cycles (no direct internet here).
+        uint16_t bleBatteryMv = readBatteryMv();
         if (ble_bundle_receiver::wait_for_bundle(
                 sealedBuf, ble_bundle_receiver::MAX_SEALED_BYTES,
-                &sealedLen, BLE_WAIT_TIMEOUT_MS)) {
+                &sealedLen, BLE_WAIT_TIMEOUT_MS, bleBatteryMv)) {
           paintBootStatus("Got bundle over Bluetooth. Rendering…");
           if (cacheSealedBundle(sealedBuf, sealedLen, x3_sk, x3_pk,
                                 /*uploaded_at=*/nullptr, /*source=*/"ble")) {

@@ -42,6 +42,7 @@ final class BLECoordinator: NSObject, ObservableObject {
     nonisolated(unsafe) private var writeQueue: Data = Data()
     nonisolated(unsafe) private var writeChar: CBCharacteristic?
     nonisolated(unsafe) private var writeTotalBytes: Int = 0
+    nonisolated(unsafe) private var writeBatteryChar: CBCharacteristic?
 
     private override init() {
         super.init()
@@ -181,6 +182,7 @@ extension BLECoordinator: CBCentralManagerDelegate {
         writeQueue = Data()
         writeChar = nil
         writeTotalBytes = 0
+        writeBatteryChar = nil
         central.scanForPeripherals(withServices: [Config.bleServiceUUID], options: nil)
     }
 }
@@ -192,7 +194,9 @@ extension BLECoordinator: CBPeripheralDelegate {
             central.cancelPeripheralConnection(peripheral)
             return
         }
-        peripheral.discoverCharacteristics([Config.bleCharacteristicUUID], for: service)
+        peripheral.discoverCharacteristics(
+            [Config.bleCharacteristicUUID, Config.bleBatteryCharacteristicUUID],
+            for: service)
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,
@@ -203,6 +207,10 @@ extension BLECoordinator: CBPeripheralDelegate {
             central.cancelPeripheralConnection(peripheral)
             return
         }
+        // Stash the battery characteristic (may be absent on old firmware
+        // — non-fatal). We'll read it after the bundle drains so we don't
+        // race the write protocol.
+        writeBatteryChar = service.characteristics?.first(where: { $0.uuid == Config.bleBatteryCharacteristicUUID })
         // GATT caps a single write at 512 bytes (BLE_ATT_ATTR_MAX_LEN). The
         // X3 expects: first chunk = 4-byte LE u32 total length followed by
         // up to 508 bytes of bundle; subsequent chunks = up to 512 bytes
@@ -233,14 +241,56 @@ extension BLECoordinator: CBPeripheralDelegate {
         guard let char = writeChar else { return }
         if writeQueue.isEmpty {
             markSynced()
-            setStatus("Delivered. Disconnecting.")
-            central.cancelPeripheralConnection(peripheral)
+            // Hand-off succeeded. If the firmware exposes the battery
+            // characteristic, read it now; the response lands in
+            // didUpdateValueFor, which forwards to /battery and then
+            // disconnects. Older firmware without the characteristic
+            // skips straight to disconnect.
+            if let batteryChar = writeBatteryChar {
+                setStatus("Delivered. Reading battery…")
+                peripheral.readValue(for: batteryChar)
+            } else {
+                setStatus("Delivered. Disconnecting.")
+                central.cancelPeripheralConnection(peripheral)
+            }
             return
         }
         let chunkSize = min(writeQueue.count, 512)
         let chunk = writeQueue.prefix(chunkSize)
         writeQueue.removeFirst(chunkSize)
         peripheral.writeValue(Data(chunk), for: char, type: .withResponse)
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral,
+                                didUpdateValueFor characteristic: CBCharacteristic,
+                                error: Error?) {
+        defer { central.cancelPeripheralConnection(peripheral) }
+        guard characteristic.uuid == Config.bleBatteryCharacteristicUUID else {
+            return
+        }
+        if let error = error {
+            setError("Battery read failed: \(error.localizedDescription)")
+            return
+        }
+        guard let bytes = characteristic.value, bytes.count >= 2 else {
+            setStatus("Battery: no data")
+            return
+        }
+        // u16 little-endian millivolts. 0 means "no reading" on the X3.
+        let mv = UInt16(bytes[0]) | (UInt16(bytes[1]) << 8)
+        guard mv > 0 else {
+            setStatus("Delivered. (No battery data.) Disconnecting.")
+            return
+        }
+        setStatus("Battery: \(mv) mV. Forwarding to Worker…")
+        Task {
+            do {
+                try await BatteryReporter.report(mv: mv)
+                self.setStatus("Battery \(mv) mV forwarded. Done.")
+            } catch {
+                self.setError("Battery forward failed: \(error)")
+            }
+        }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,

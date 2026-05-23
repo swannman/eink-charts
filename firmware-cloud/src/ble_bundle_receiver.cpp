@@ -90,7 +90,8 @@ class ConnCallbacks : public NimBLEServerCallbacks {
 };
 
 bool wait_for_bundle(uint8_t* out_buf, size_t cap,
-                     size_t* out_len, uint32_t timeout_ms) {
+                     size_t* out_len, uint32_t timeout_ms,
+                     uint16_t battery_mv) {
   g_bundle_received = false;
   g_out_buf = out_buf;
   g_out_cap = (cap < MAX_SEALED_BYTES) ? cap : MAX_SEALED_BYTES;
@@ -119,6 +120,22 @@ bool wait_for_bundle(uint8_t* out_buf, size_t cap,
       BUNDLE_ATTR_MAX_LEN);
   static BundleCharCallbacks ch_cb;
   bundle_char->setCallbacks(&ch_cb);
+
+  // Read-only battery characteristic. Value is snapshotted now (before
+  // advertising) — there's no real cost to staleness because the BLE
+  // session is short-lived and we entered it specifically because we
+  // couldn't post the same reading over WiFi.
+  NimBLECharacteristic* battery_char = service->createCharacteristic(
+      BATTERY_CHARACTERISTIC_UUID,
+      NIMBLE_PROPERTY::READ,
+      sizeof(battery_mv));
+  const uint8_t battery_bytes[2] = {
+      (uint8_t)(battery_mv & 0xFF),
+      (uint8_t)((battery_mv >> 8) & 0xFF),
+  };
+  battery_char->setValue(battery_bytes, sizeof(battery_bytes));
+  Log.printf("ble: battery characteristic = %u mV\n", (unsigned)battery_mv);
+
   service->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();

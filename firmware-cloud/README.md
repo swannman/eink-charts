@@ -144,7 +144,15 @@ the iOS companion app drives.
 
 GATT layout:
 - Service `0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c7f`
-- Characteristic `0e1c0a9c-1bb1-4f1e-8e26-1c3c5a3e9c80` (write-with-response)
+- Bundle characteristic `…9c80` (write-with-response, max 512 bytes)
+- Battery characteristic `…9c81` (read, 2-byte LE u16 millivolts)
+
+The battery characteristic carries the current BQ27220 reading, snapshotted
+before advertising starts. The iOS app reads it right after the bundle
+hand-off completes and PUTs it to the Worker's `/battery` endpoint, so
+the synthetic battery panel keeps updating during BLE-only cycles —
+otherwise telemetry would gap whenever the X3 is away from Wi-Fi. Value
+of 0 means "no reading available" (USB-powered, missing battery, dead gauge).
 
 Wire format on the characteristic:
 - **First write**: 4-byte little-endian u32 total length, then up to 508
