@@ -2,7 +2,7 @@
 
 Custom firmware + push service that turns an Xteink X3 3.68" e-paper
 display (ESP32-C3, 792×528, 1-bit, SSD1677) into a Grafana Cloud dashboard
-viewer that works **anywhere you have your phone**.
+viewer that works anywhere you have your phone.
 
 The X3 wakes on a timer (or button press), fetches a pre-rendered bundle
 of chart data either over Wi-Fi (HTTPS to a Cloudflare Worker) or BLE
@@ -78,7 +78,7 @@ key it generated on first boot) can decrypt.
 
 ## References
 
-Everything I read while designing this. None are git-vendored — they're
+Everything we read while designing this. None are git-vendored — they're
 research material only.
 
 - **[bcrpntr/crosspet-x3](https://github.com/bcrpntr/crosspet-x3)** (MIT) —
