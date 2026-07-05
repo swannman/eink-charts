@@ -61,7 +61,13 @@ def _nice_number(x: float, round_: bool) -> float:
 
 
 def nice_axis(lo: float, hi: float, ticks: int = 5) -> tuple[float, float, list[float]]:
-    """Return (axis_min, axis_max, tick_values) using nice round numbers."""
+    """Return (axis_min, axis_max, tick_values) using nice round numbers.
+
+    Bounds are floor/ceil'd to the tick step, so ticks are evenly spaced across
+    the whole [axis_min, axis_max] range. This is what the X3 firmware expects
+    (it places labels evenly from the axis bottom to top). The TRMNL X path uses
+    :func:`uplot_range` + :func:`nice_ticks` instead, which matches Grafana's
+    tighter, data-hugging axis and carries per-label positions."""
     if not (math.isfinite(lo) and math.isfinite(hi)):
         lo, hi = 0.0, 1.0
     if hi <= lo:
@@ -76,6 +82,136 @@ def nice_axis(lo: float, hi: float, ticks: int = 5) -> tuple[float, float, list[
         out.append(round(v, 6))
         v += step
     return axis_min, axis_max, out
+
+
+# --- Grafana-faithful axis (uPlot) ------------------------------------------
+# Grafana's timeseries panel draws its y-axis with uPlot, whose default range
+# function hugs the data: it extends the axis to the soft min/max when the data
+# sits inside them, and to (data +/- 10% padding, snapped to a nice increment)
+# when the data poke past them — it does NOT round the whole axis out to the
+# next big tick. Ticks are then placed *within* that range and generally don't
+# touch the edges. We replicate rangeNum() (uPlot src/utils.js) exactly so the
+# device's charts frame the data the same way Grafana does; because the edges
+# aren't tick-aligned, each label carries its own normalized position.
+
+def _incr_round_dn(num: float, incr: float) -> float:
+    return math.floor(num / incr) * incr
+
+
+def _incr_round_up(num: float, incr: float) -> float:
+    return math.ceil(num / incr) * incr
+
+
+def uplot_range(
+    data_min: float,
+    data_max: float,
+    *,
+    soft_min: float | None = None,
+    soft_max: float | None = None,
+    hard_min: float | None = None,
+    hard_max: float | None = None,
+    pad: float = 0.1,
+) -> tuple[float, float]:
+    """Port of uPlot's ``_rangeNum`` (the default numeric scale range). Grafana
+    configures soft bounds with ``mode: 1`` (a soft limit binds only while the
+    data stays inside it) and the default 10% padding — reproduced here so the
+    TRMNL axis extent matches Grafana panel-for-panel."""
+    inf = math.inf
+    if not math.isfinite(data_min) or not math.isfinite(data_max):
+        data_min, data_max = 0.0, 1.0
+    if data_max < data_min:
+        data_min, data_max = data_max, data_min
+
+    s_min = inf if soft_min is None else float(soft_min)
+    s_max = -inf if soft_max is None else float(soft_max)
+    s_min_mode = 1 if soft_min is not None else 3
+    s_max_mode = 1 if soft_max is not None else 3
+    h_min = -inf if hard_min is None else float(hard_min)
+    h_max = inf if hard_max is None else float(hard_max)
+
+    delta = data_max - data_min
+    if delta < 1e-24:
+        delta = 0.0
+        if data_min == 0 or data_max == 0:
+            delta = 1e-24
+    scalar_max = max(abs(data_min), abs(data_max))
+    non_zero_delta = delta or scalar_max or 1e3
+    base = 10.0 ** math.floor(math.log10(non_zero_delta))
+
+    pad_min = non_zero_delta * ((0.1 if data_min == 0 else 1.0) if delta == 0 else pad)
+    new_min = _incr_round_dn(data_min - pad_min, base / 10.0)
+    if data_min >= s_min and (
+        s_min_mode == 1
+        or (s_min_mode == 3 and new_min <= s_min)
+        or (s_min_mode == 2 and new_min >= s_min)
+    ):
+        soft_min_eff = s_min
+    else:
+        soft_min_eff = inf
+    if new_min < soft_min_eff and data_min >= soft_min_eff:
+        min_lim = max(h_min, soft_min_eff)
+    else:
+        min_lim = max(h_min, min(soft_min_eff, new_min))
+
+    pad_max = non_zero_delta * ((0.1 if data_max == 0 else 1.0) if delta == 0 else pad)
+    new_max = _incr_round_up(data_max + pad_max, base / 10.0)
+    if data_max <= s_max and (
+        s_max_mode == 1
+        or (s_max_mode == 3 and new_max >= s_max)
+        or (s_max_mode == 2 and new_max <= s_max)
+    ):
+        soft_max_eff = s_max
+    else:
+        soft_max_eff = -inf
+    if new_max > soft_max_eff and data_max <= soft_max_eff:
+        max_lim = min(h_max, soft_max_eff)
+    else:
+        max_lim = min(h_max, max(soft_max_eff, new_max))
+
+    if min_lim == max_lim:
+        if min_lim == 0:
+            max_lim = 100.0
+        elif min_lim < 0:
+            min_lim *= 2.0
+            max_lim = 0.0
+        else:
+            min_lim = 0.0
+            max_lim *= 2.0
+    return round(min_lim, 10), round(max_lim, 10)
+
+
+def _nice_incr(x: float) -> float:
+    """Smallest nice increment (mantissa 1/2/2.5/5 x 10^k) that is >= ``x``.
+    Matches the tick spacings Grafana/uPlot pick for these panels (the 2.5
+    mantissa is what yields the fridge's 32.5/35/37.5 ticks)."""
+    if x <= 0:
+        return 1.0
+    exp = math.floor(math.log10(x))
+    base = 10.0 ** exp
+    for m in (1.0, 2.0, 2.5, 5.0):
+        if m * base >= x - 1e-12:
+            return m * base
+    return 10.0 * base
+
+
+def nice_ticks(axis_min: float, axis_max: float, target: int = 7, max_ticks: int = 8) -> list[float]:
+    """Nice tick values strictly within [axis_min, axis_max] (they need not touch
+    the edges — the edges come from :func:`uplot_range`). Thinned to at most
+    ``max_ticks`` so the device's fixed label budget isn't exceeded."""
+    span = axis_max - axis_min
+    if span <= 0:
+        return [round(axis_min, 10)]
+    incr = _nice_incr(span / max(1, target))
+    first = math.ceil(axis_min / incr - 1e-9) * incr
+    ticks: list[float] = []
+    v = first
+    while v <= axis_max + 1e-9:
+        ticks.append(round(v, 10))
+        v += incr
+    # Too many for the device? Drop to every Nth (keeps them nicely spaced).
+    while len(ticks) > max_ticks:
+        ticks = ticks[::2]
+    return ticks
 
 
 def _format_tick(v: float, decimals: int) -> str:
@@ -138,10 +274,17 @@ async def fetch_panel_data(
     token: str,
     panel: PanelConfig,
     target_points: int = 800,
+    tight_axis: bool = False,
 ) -> dict[str, Any]:
     """Execute all of a panel's queries and shape the result into rendering-ready
     JSON. Series points are normalized to [0,1] on both axes so the device can
-    plot directly without rescaling."""
+    plot directly without rescaling.
+
+    ``tight_axis`` selects the y-axis model: the X3 (default) uses
+    :func:`nice_axis` (tick-aligned bounds, labels evenly spaced on the device);
+    the TRMNL X passes ``tight_axis=True`` to get Grafana's uPlot range
+    (:func:`uplot_range`) with ticks placed within it (:func:`nice_ticks`) and a
+    normalized position per label, so its charts frame the data like Grafana."""
     now = time.time()
     start = parse_grafana_time(panel.from_, now)
     end = parse_grafana_time(panel.to, now)
@@ -207,7 +350,21 @@ async def fetch_panel_data(
         y_lo = max(y_lo, panel.hard_min)
     if panel.hard_max is not None:
         y_hi = min(y_hi, panel.hard_max)
-    axis_min, axis_max, ticks = nice_axis(y_lo, y_hi, ticks=5)
+    y_positions: list[float] | None = None
+    if tight_axis:
+        # Grafana/uPlot: hug the data (soft bounds bind while data is inside
+        # them; otherwise pad 10% past the data). Ticks live within the range,
+        # each carrying its own normalized position since the edges aren't ticks.
+        axis_min, axis_max = uplot_range(
+            global_min, global_max,
+            soft_min=panel.soft_min, soft_max=panel.soft_max,
+            hard_min=panel.hard_min, hard_max=panel.hard_max,
+        )
+        ticks = nice_ticks(axis_min, axis_max)
+        rng_axis = axis_max - axis_min if axis_max > axis_min else 1.0
+        y_positions = [round((t - axis_min) / rng_axis, 5) for t in ticks]
+    else:
+        axis_min, axis_max, ticks = nice_axis(y_lo, y_hi, ticks=5)
     y_labels = [_format_tick(v, panel.decimals) for v in ticks]
     x_labels = _format_time_axis(start, end, panel.tz, n=5)
 
@@ -222,9 +379,12 @@ async def fetch_panel_data(
                 normalized.append([round(nx, 5), round(ny, 5)])
         series_out.append({"name": name, "points": normalized})
 
+    y_axis: dict[str, Any] = {"min": axis_min, "max": axis_max, "labels": y_labels}
+    if y_positions is not None:
+        y_axis["positions"] = y_positions
     return {
         "title": panel.name,
-        "y_axis": {"min": axis_min, "max": axis_max, "labels": y_labels},
+        "y_axis": y_axis,
         "x_axis": {"labels": x_labels},
         "series": series_out,
     }

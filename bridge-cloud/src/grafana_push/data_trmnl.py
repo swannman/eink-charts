@@ -12,7 +12,7 @@ Gray convention matches FastEPD: 0 = black, 15 = white.
 
 Binary layout (all little-endian, ``pstr`` = u8 length + UTF-8 bytes):
 
-    Header:  u16 magic=0xCFB2, u8 version=1, u8 dashboard_count, u32 next_poll
+    Header:  u16 magic=0xCFB2, u8 version=2, u8 dashboard_count, u32 next_poll
     Offsets: u32 * dashboard_count   (byte offset of each dashboard block)
     Dashboard block:
       pstr title
@@ -26,7 +26,7 @@ Binary layout (all little-endian, ``pstr`` = u8 length + UTF-8 bytes):
         pstr unit             (already shortened, e.g. "%", "F")
         u8 base_gray          (status shade from the active threshold; 15 if none)
         -- type 0 (timeseries) --
-        u8 y_label_count, then count x pstr
+        u8 y_label_count, then count x { pstr text, u16 pos_norm }
         u8 x_label_count, then count x pstr
         u8 band_count, then count x { u16 y0n, u16 y1n, u8 gray }
         u8 series_count, then per series: u16 point_count, count x { u16 nx, u16 ny }
@@ -42,7 +42,7 @@ import struct
 from typing import Any
 
 BUNDLE_MAGIC = 0xCFB2
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2   # v2: y labels carry a u16 normalized position (Grafana axis)
 
 # Slideshow manifest: a tiny sidecar the device fetches first so it knows how
 # many per-dashboard bundles exist and which changed since last time (so it only
@@ -155,31 +155,27 @@ def band_gray_for_color(color: str | None) -> int:
     return g if g < GRAY_WHITE else GRAY_WHITE
 
 
-def _sorted_steps(
-    steps: list[tuple[float | None, str]],
-) -> list[tuple[float | None, str]]:
-    """Grafana evaluates thresholds in ascending value order (null = -inf);
-    sort defensively in case the panel JSON stores them out of order."""
-    return sorted(steps, key=lambda s: (-math.inf if s[0] is None else s[0]))
+def _active_threshold_color(steps: list[tuple[float | None, str]], value: float) -> str:
+    """Grafana's ``getActiveThreshold``, replicated exactly. It iterates the
+    steps in ARRAY order (NOT sorted) and returns the colour of the LAST step
+    whose value is <= ``value``, defaulting to ``steps[0]`` (the base). A null
+    value means -inf (always active).
+
+    These dashboards store thresholds like ``[red@0, green@-8, red@4]`` — the
+    base (first array element) isn't the lowest value, so sorting would pick the
+    wrong base and drop/relocate bands. Evaluating in place matches Grafana."""
+    color = steps[0][1]
+    for thr, c in steps:
+        if thr is None or value >= thr:
+            color = c
+    return color
 
 
 def active_threshold_gray(steps: list[tuple[float | None, str]], value: float | None) -> int:
-    """Gray of the threshold step a stat value falls in (Grafana's absolute
-    thresholds: the last step whose ``value`` is <= the reading; the first
-    step's value is null = -inf)."""
+    """Gray of the threshold step a stat value falls in (Grafana semantics)."""
     if not steps or value is None:
         return GRAY_WHITE
-    steps = _sorted_steps(steps)
-    chosen = steps[0][1]
-    for thr, color in steps:
-        if thr is None:
-            chosen = color
-            continue
-        if value >= thr:
-            chosen = color
-        else:
-            break
-    return gray_for_color(chosen)
+    return gray_for_color(_active_threshold_color(steps, value))
 
 
 def bands_from_steps(
@@ -188,38 +184,39 @@ def bands_from_steps(
     axis_max: float,
 ) -> list[tuple[float, float, int]]:
     """Convert absolute threshold steps into normalized [0,1] fill bands for a
-    timeseries panel (used by dashboards whose thresholdsStyle shows an area).
-    Each band spans from one step's value up to the next, shaded by that step's
-    colour via :func:`band_gray_for_color` (in-range/green draws nothing).
-    Returns (y0_norm, y1_norm, gray) with y measured bottom-up like the device's
-    chart y-axis."""
+    timeseries panel (dashboards whose thresholdsStyle shows an area).
+
+    Rather than assume the steps are sorted, split the axis at every threshold
+    value and shade each sub-interval by Grafana's active-threshold colour at its
+    midpoint (via :func:`_active_threshold_color`) — so an out-of-array-order or
+    real-valued base (e.g. a freezer's ``red`` base at 0 with the axis reaching
+    below 0) yields exactly the zones Grafana draws. In-range/green draws
+    nothing. Returns (y0_norm, y1_norm, gray), y measured bottom-up."""
     if not steps or axis_max <= axis_min:
         return []
     rng = axis_max - axis_min
-    # Lower edges. Grafana's LOWEST step is the base (covers from -inf), even
-    # when its stored value isn't null — so anchor the first sorted step at
-    # axis_min regardless of its value. (Anchoring it at its own value instead
-    # drops the below-value band whenever that value sits above axis_min, e.g. a
-    # freezer with a red base at 0 and an axis reaching below 0.) Later steps
-    # anchor at their threshold value, clamped to the axis.
-    edges: list[tuple[float, str]] = []
-    for i, (thr, color) in enumerate(_sorted_steps(steps)):
-        if i == 0 or thr is None:
-            v = axis_min
-        else:
-            v = max(axis_min, min(axis_max, thr))
-        edges.append((v, color))
+    # Boundaries: the axis ends plus every threshold value strictly inside it.
+    bounds = {axis_min, axis_max}
+    for thr, _c in steps:
+        if thr is not None and axis_min < thr < axis_max:
+            bounds.add(float(thr))
+    ordered = sorted(bounds)
     bands: list[tuple[float, float, int]] = []
-    for i, (lo, color) in enumerate(edges):
-        hi = edges[i + 1][0] if i + 1 < len(edges) else axis_max
+    for i in range(len(ordered) - 1):
+        lo, hi = ordered[i], ordered[i + 1]
         if hi <= lo:
             continue
-        gray = band_gray_for_color(color)
+        gray = band_gray_for_color(_active_threshold_color(steps, (lo + hi) / 2.0))
         if gray >= GRAY_WHITE:
-            continue  # in-range / white bands draw no fill
+            continue  # in-range / green draws no fill
         y0n = (lo - axis_min) / rng
         y1n = (hi - axis_min) / rng
-        bands.append((round(y0n, 5), round(y1n, 5), gray))
+        # Merge with the previous band when it's the same shade and touches
+        # (e.g. two adjacent red steps) so the device sees one band, not two.
+        if bands and bands[-1][2] == gray and abs(bands[-1][1] - y0n) < 1e-6:
+            bands[-1] = (bands[-1][0], round(y1n, 5), gray)
+        else:
+            bands.append((round(y0n, 5), round(y1n, 5), gray))
     return bands
 
 
@@ -271,9 +268,16 @@ def _encode_panel(buf: bytearray, p: dict[str, Any]) -> None:
 
     # timeseries
     y_labels = [str(x) for x in (p.get("y_labels") or [])][:255]
+    # Per-label normalized position (0=bottom..1=top). Absent (or a length
+    # mismatch) falls back to even spacing so old callers/tests still encode.
+    y_pos = list(p.get("y_label_pos") or [])
+    if len(y_pos) != len(y_labels):
+        n = len(y_labels)
+        y_pos = [(i / (n - 1) if n > 1 else 0.0) for i in range(n)]
     buf.append(len(y_labels))
-    for lab in y_labels:
+    for lab, pos in zip(y_labels, y_pos):
         _encode_pstr(buf, lab)
+        buf += struct.pack("<H", _u16n(pos))
     x_labels = [str(x) for x in (p.get("x_labels") or [])][:255]
     buf.append(len(x_labels))
     for lab in x_labels:
@@ -482,7 +486,13 @@ def _decode_panel(r: _Reader) -> dict[str, Any]:
         ]
         return panel
     yn = r.u8()
-    panel["y_labels"] = [r.pstr() for _ in range(yn)]
+    y_labels: list[str] = []
+    y_pos: list[float] = []
+    for _ in range(yn):
+        y_labels.append(r.pstr())
+        y_pos.append(r.u16() / 65535.0)
+    panel["y_labels"] = y_labels
+    panel["y_label_pos"] = y_pos
     xn = r.u8()
     panel["x_labels"] = [r.pstr() for _ in range(xn)]
     bn = r.u8()

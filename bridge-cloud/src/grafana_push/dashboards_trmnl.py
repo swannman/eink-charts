@@ -143,6 +143,7 @@ async def build_dashboards(
                 data = await fetch_panel_data(
                     client, config.grafana_url, token, pc_win,
                     target_points=TRMNL_TARGET_POINTS,
+                    tight_axis=True,
                 )
             except Exception as e:
                 log.warning("trmnl: panel '%s' fetch failed: %s", pc.name, e)
@@ -185,6 +186,9 @@ async def build_dashboards(
                     "type": PANEL_TIMESERIES,
                     "base_gray": GRAY_WHITE,
                     "y_labels": y_axis.get("labels") or [],
+                    # Normalized (0=bottom..1=top) position of each y label, so
+                    # the device draws them where Grafana does instead of evenly.
+                    "y_label_pos": y_axis.get("positions") or [],
                     # X axis (time) labels dropped — they crowd the small charts
                     # and the "as-of" time is already on the dashboard cadence.
                     "x_labels": [],

@@ -8,7 +8,7 @@
 #include <string.h>
 
 constexpr uint16_t TRMNL_BUNDLE_MAGIC = 0xCFB2;
-constexpr uint8_t TRMNL_BUNDLE_VERSION = 1;
+constexpr uint8_t TRMNL_BUNDLE_VERSION = 2;   // v2: y labels carry a u16 position
 constexpr uint8_t PANEL_TIMESERIES = 0;
 constexpr uint8_t PANEL_STAT = 1;
 

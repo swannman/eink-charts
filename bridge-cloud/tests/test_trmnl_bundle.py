@@ -86,11 +86,17 @@ def test_bands_from_steps_base_below_axis_min() -> None:
 
 
 def test_bands_from_steps_rgba_and_unsorted() -> None:
-    # Real Grafana data: rgba colours, and steps stored out of value order.
+    # Real Grafana Indoor-Freezer data: base red is stored FIRST but isn't the
+    # lowest value ([red@0, green@-8, red@4]). Grafana treats steps[0] as the
+    # base, so the zones are: red below -8, green -8..4, red above 4. Sorting
+    # would wrongly make green the base and drop the below--8 red band.
     steps = [(0.0, "rgba(255,0,0,0.1)"), (-8.0, "rgba(0,200,0,0.1)"), (4.0, "rgba(255,0,0,0.1)")]
     bands = bands_from_steps(steps, -10.0, 10.0)
-    # green (in-range) drops out; the two red zones remain, correctly ordered.
-    assert bands
+    assert len(bands) == 2                       # below--8 red + above-4 red
+    assert bands[0][0] == 0.0                    # bottom band starts at axis min
+    assert abs(bands[0][1] - 0.1) < 1e-4         # up to value -8
+    assert abs(bands[1][0] - 0.7) < 1e-4         # top band from value 4
+    assert abs(bands[-1][1] - 1.0) < 1e-4
     assert all(g == BAND_GRAY_ALERT for _, _, g in bands)
     assert bands == sorted(bands)
 
@@ -132,7 +138,7 @@ def test_bundle_roundtrip() -> None:
     assert len(etag) == 16
     dec = decode_dashboard_bundle(body)
     assert dec["magic"] == 0xCFB2
-    assert dec["version"] == 1
+    assert dec["version"] == 2
     assert dec["next_poll"] == 600
     assert len(dec["dashboards"]) == 2
 
@@ -143,6 +149,11 @@ def test_bundle_roundtrip() -> None:
     assert p["type"] == PANEL_TIMESERIES
     assert p["title"] == "Indoor Fridge (F)"
     assert p["y_labels"] == ["31", "34", "37", "40"]
+    # No positions supplied on this sample → encoder falls back to even spacing,
+    # so the decoded positions are 0, 1/3, 2/3, 1.
+    assert p["y_label_pos"][0] == 0.0
+    assert abs(p["y_label_pos"][-1] - 1.0) < 1e-4
+    assert abs(p["y_label_pos"][1] - 1 / 3) < 1e-3
     assert len(p["bands"]) == 3
     assert len(p["series"]) == 2            # multi-series preserved
     assert len(p["series"][0]) == 3
@@ -155,6 +166,29 @@ def test_bundle_roundtrip() -> None:
     assert s["unit"] == "%"
     assert s["base_gray"] == 9
     assert len(s["sparkline"]) == 2
+
+
+def test_bundle_y_label_positions_roundtrip() -> None:
+    # Explicit (uneven) label positions — as the Grafana/uPlot axis produces —
+    # survive the u16 quantization and are decoded back per label.
+    dashboards = [{
+        "title": "1", "grid_cols": 24, "grid_rows": 9,
+        "panels": [{
+            "type": PANEL_TIMESERIES, "gx": 0, "gy": 0, "gw": 12, "gh": 9,
+            "title": "Indoor Freezer (F)", "unit": "", "base_gray": 15,
+            "y_labels": ["-10", "-5", "0", "5", "10"],
+            # -10..13 range: ticks -10,-5,0,5,10 don't touch the top edge (13).
+            "y_label_pos": [0.0, 0.2174, 0.4348, 0.6522, 0.8696],
+            "x_labels": [], "bands": [], "series": [],
+        }],
+    }]
+    dec = decode_dashboard_bundle(encode_dashboard_bundle(dashboards, next_poll=600)[0])
+    p = dec["dashboards"][0]["panels"][0]
+    assert p["y_labels"] == ["-10", "-5", "0", "5", "10"]
+    got = p["y_label_pos"]
+    assert got[0] == 0.0
+    assert abs(got[-1] - 0.8696) < 1e-3          # top tick sits below the edge
+    assert all(abs(a - b) < 1e-3 for a, b in zip(got, [0.0, 0.2174, 0.4348, 0.6522, 0.8696]))
 
 
 def test_bundle_etag_stable() -> None:

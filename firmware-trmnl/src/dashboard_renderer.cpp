@@ -14,9 +14,11 @@ namespace {
 
 // Layout constants — MUST mirror tools/preview_trmnl.py.
 constexpr int PANEL_GUTTER = 6;
-// Panel titles: bold (Roboto Black) but a soft mid-gray rather than black, so
-// they read clearly without shouting over the data.
-constexpr uint8_t TITLE_GRAY = 6;
+// Panel titles + y-axis tick labels: light grays (0=black..15=white) so they
+// frame the data without competing with the plotted line. Kept near-white on
+// purpose — on the calibrated 16-level panel these still read clearly.
+constexpr uint8_t TITLE_GRAY = 12;   // light — was 10 (still "too dark")
+constexpr uint8_t YAXIS_GRAY = 11;   // light — was 8
 const uint8_t SERIES_GRAYS[] = {0, 6, 10, 3};
 
 // Holds a full 4x series (~3200 pts) so a high-res chart isn't truncated. Two
@@ -31,6 +33,7 @@ char gTitle[96];
 char gUnit[16];
 char gValue[32];
 char gYL[MAX_LABELS][12];
+float gYLPos[MAX_LABELS];   // normalized 0=bottom..1=top for each y label (v2)
 struct Band { float y0, y1; uint8_t g; };
 Band gBands[MAX_BANDS];
 
@@ -94,15 +97,20 @@ void renderStat(int px, int py, int pw, int ph, uint8_t base_gray, int sparkN) {
   int vw = gfx4::textWidth(value, vpx);
   int upx = clampi(vpx * 6 / 10, 16, 40);
   int uw = gUnit[0] ? gfx4::textWidth(gUnit, upx) : 0;
-  // Tiny gap so the value and unit read as one word ("28%") — the value's own
-  // trailing advance already supplies most of the visual spacing.
-  int gap = std::max(1, vpx / 40);
-  int total = vw + (uw ? uw + gap : 0);
+  // textWidth() (BB_FONT getStringBox) over-reports this font's width by a
+  // roughly constant ~1.6em of phantom trailing advance, so placing the unit at
+  // gx+vw floats it far right ("28      %"). Subtract that trailing (scaled by
+  // the value's font size) so the unit lands just past the digits' real ink
+  // ("28%"); a 40%-of-width floor guards short values from an overlap.
+  int uoff = vw - (vpx * 8) / 5;
+  int floor = (vw * 40) / 100;
+  if (uoff < floor) uoff = floor;
+  int total = uw ? (uoff + uw) : vw;
   int gx = px + (pw - total) / 2;
   if (gx < px + 8) gx = px + 8;
   int vy = py + ph / 2 - vpx / 2;
   gfx4::drawTextFit(gx, vy, pw, vpx, value, GRAY_BLACK);
-  if (uw) gfx4::drawTextFit(gx + vw + gap, vy + (vpx - upx), pw, upx, gUnit, 4);
+  if (uw) gfx4::drawTextFit(gx + uoff, vy + (vpx - upx), pw, upx, gUnit, 4);
 
   // Sparkline in the bottom band.
   if (sparkN >= 2) {
@@ -128,12 +136,15 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
                            int bn, int& left, int& top, int& right, int& bot) {
   int tb_h = clampi((int)(ph * 0.12f), 24, 42);
   int titlePx = clampi((int)(tb_h * 0.72f), 16, 30);
-  gfx4::drawTextFit(px + 10, py + 6, pw - 20, titlePx, gTitle, TITLE_GRAY);
 
   left = px + PANEL_GUTTER + (yn ? 48 : 10);
   right = px + pw - PANEL_GUTTER - 6;
   top = py + tb_h + 6;
   bot = py + ph - PANEL_GUTTER - 6;   // no x-axis labels: reclaim the bottom
+
+  // Title left-aligned with the plot's left edge (where the x-axis begins).
+  gfx4::drawTextFit(left, py + 6, (px + pw - PANEL_GUTTER) - left, titlePx, gTitle, TITLE_GRAY);
+
   if (right - left < 20 || bot - top < 20) { left = right = top = bot = 0; return; }
   int plotW = right - left, plotH = bot - top;
 
@@ -146,12 +157,23 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
     if (by1 > by0) epd.fillRect(left, by0, plotW, by1 - by0, gBands[i].g);
   }
 
-  // Y gridlines + labels (no x-axis line, no x tick labels).
-  int labTar = clampi((int)(ph * 0.07f), 16, 24);
+  // Y gridlines + labels (no x-axis line, no x tick labels). Size every label
+  // to the compact font the widest one needs (so 3-digit / negative labels set
+  // the size and all labels stay small and uniform), drawn in a light gray.
+  // Each label sits at its own normalized position (gYLPos) — the bridge (like
+  // Grafana/uPlot) places ticks inside a data-hugging range, so they are NOT
+  // evenly spaced and don't touch the axis edges.
+  int labTar = clampi((int)(ph * 0.06f), 16, 20);
+  int labPx = labTar;
   for (int i = 0; i < yn; i++) {
-    int gy = bot - (int)((int64_t)plotH * i / std::max(1, yn - 1));
+    int fp = gfx4::fittedPx(gYL[i], 44, labTar);
+    if (fp < labPx) labPx = fp;
+  }
+  for (int i = 0; i < yn; i++) {
+    float pos = std::min(1.0f, std::max(0.0f, gYLPos[i]));
+    int gy = bot - (int)(pos * plotH);
     gfx4::dottedHLine(left + 2, right, gy, 10);
-    gfx4::drawTextRightFit(left - 6, gy - labTar / 2, 46, labTar, gYL[i], GRAY_BLACK);
+    gfx4::drawTextRightFit(left - 6, gy - labPx / 2, 46, labPx, gYL[i], YAXIS_GRAY);
   }
 }
 
@@ -201,8 +223,14 @@ bool render(const uint8_t* blob, size_t len, uint32_t index) {
       uint8_t yn = r.u8();
       int yStored = 0;
       for (uint8_t i = 0; i < yn; i++) {
-        if (yStored < MAX_LABELS) r.pstr(gYL[yStored++], sizeof(gYL[0]));
-        else r.skipPstr();
+        if (yStored < MAX_LABELS) {
+          r.pstr(gYL[yStored], sizeof(gYL[0]));
+          gYLPos[yStored] = r.u16() / 65535.0f;   // v2: per-label position
+          yStored++;
+        } else {
+          r.skipPstr();
+          r.u16();
+        }
       }
       uint8_t xn = r.u8();  // x-axis labels are no longer drawn; skip any present
       for (uint8_t i = 0; i < xn; i++) r.skipPstr();

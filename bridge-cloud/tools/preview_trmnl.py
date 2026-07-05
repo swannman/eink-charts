@@ -98,17 +98,19 @@ def _cell_xy(grid_rows: int) -> tuple[float, float]:
 def _draw_timeseries(draw, x, y, w, h, panel):
     title = panel["title"]
     tb_h = int(min(max(h * TITLE_FRAC, 26), 54))
-    tf = _fit_font(draw, title, w - 20, tb_h * 0.82)
-    _, tth = _text_wh(draw, title, tf)
-    draw.text((x + 10, y + 6 + (tb_h - tth) // 2), title, fill=0, font=tf)
 
     # Plot area with room for y-labels on the left (x-labels dropped).
-    lab_f = _font(min(max(11, h * 0.06), 22))
     yl = panel.get("y_labels") or []
     left = x + PANEL_GUTTER + (48 if yl else 10)
     right = x + w - PANEL_GUTTER - 6
     top = y + tb_h + 6
     bot = y + h - PANEL_GUTTER - 6      # no x-axis labels: reclaim the bottom
+
+    # Title: left-aligned with the plot's left edge, light gray (mirror firmware).
+    tf = _fit_font(draw, title, (x + w - PANEL_GUTTER) - left, tb_h * 0.82)
+    _, tth = _text_wh(draw, title, tf)
+    draw.text((left, y + 6 + (tb_h - tth) // 2), title, fill=g2l(12), font=tf)
+
     if right - left < 20 or bot - top < 20:
         return
     pw, ph = right - left, bot - top
@@ -120,15 +122,20 @@ def _draw_timeseries(draw, x, y, w, h, panel):
         by1 = bot - int(y0n * ph)
         draw.rectangle([left, by0, right, by1], fill=g2l(gray))
 
-    # Axis + dotted gridlines + y labels.
-    draw.line([left, bot, right, bot], fill=0, width=2)
+    # Dotted gridlines + y labels (no x-axis line). Compact, light labels.
+    # Each label sits at its own normalized position (bridge places ticks inside
+    # a data-hugging Grafana/uPlot range, so they're not evenly spaced); fall
+    # back to even spacing if positions are absent.
+    lab_f = _font(min(max(11, h * 0.055), 18))
     n = len(yl)
+    pos = panel.get("y_label_pos") or []
     for i, lab in enumerate(yl):
-        gy = bot - int(ph * i / max(1, n - 1))
+        p = pos[i] if i < len(pos) else (i / (n - 1) if n > 1 else 0.0)
+        gy = bot - int(max(0.0, min(1.0, p)) * ph)
         for gx in range(left + 2, right, 6):
             draw.point((gx, gy), fill=g2l(10))
         tw, th = _text_wh(draw, lab, lab_f)
-        draw.text((left - 6 - tw, gy - th // 2), lab, fill=0, font=lab_f)
+        draw.text((left - 6 - tw, gy - th // 2), lab, fill=g2l(11), font=lab_f)
 
     # Series lines.
     for si, pts in enumerate(panel.get("series") or []):
