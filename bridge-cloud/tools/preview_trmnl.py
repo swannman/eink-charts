@@ -160,18 +160,14 @@ def _draw_stat(draw, x, y, w, h, panel):
     tf = _fit_font(draw, panel["title"], w - 28, min(max(h * 0.15, 20), 40))
     draw.text((x + 16, y + 14), panel["title"], fill=0, font=tf)
 
-    value = panel.get("value_str") or "-"
-    unit = panel.get("unit") or ""
-    vf = _fit_font(draw, value + unit, w - 40, h * 0.42)
-    uf = _font(_text_wh(draw, "0", vf)[1] * 0.55)
-    vw, vh = _text_wh(draw, value, vf)
-    uw, uh = _text_wh(draw, unit, uf) if unit else (0, 0)
-    total = vw + (uw + 6 if unit else 0)
-    cx = x + w // 2 - total // 2
+    # Value + unit as one string in one font (mirror firmware) so the font's own
+    # kerning handles the spacing and the unit matches the digits' size.
+    vu = (panel.get("value_str") or "-") + (panel.get("unit") or "")
+    vf = _fit_font(draw, vu, w - 24, h * 0.42)
+    vw, vh = _text_wh(draw, vu, vf)
+    cx = x + w // 2 - vw // 2
     cy = y + h // 2 - vh // 2
-    draw.text((cx, cy), value, fill=0, font=vf)
-    if unit:
-        draw.text((cx + vw + 6, cy + (vh - uh)), unit, fill=g2l(4), font=uf)
+    draw.text((cx, cy), vu, fill=0, font=vf)
 
     # Sparkline in the bottom band.
     spark = panel.get("sparkline") or []

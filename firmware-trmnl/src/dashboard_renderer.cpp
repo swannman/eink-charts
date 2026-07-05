@@ -1,6 +1,7 @@
 #include "dashboard_renderer.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "bundle_parser.h"
 #include "config.h"
@@ -88,29 +89,16 @@ void renderStat(int px, int py, int pw, int ph, uint8_t base_gray, int sparkN) {
   int titlePx = clampi((int)(ph * 0.09f), 18, 28);
   gfx4::drawTextFit(px + 16, py + 10, pw - 28, titlePx, gTitle, TITLE_GRAY);
 
-  // Value (+ unit) as one baseline-aligned group, centered in the tile. Use the
-  // font's actual discrete size (fittedPx) for positioning so the value sits at
-  // the true vertical centre and the unit hugs its baseline.
+  // Value + unit as a single string in one font ("34%"), so the font's own
+  // metrics handle the size and kerning — drawing them separately made the unit
+  // look small and mis-spaced. Centered in the tile.
+  char vu[48];
   const char* value = gValue[0] ? gValue : "-";
+  snprintf(vu, sizeof(vu), "%s%s", value, gUnit);
   int vtar = clampi((int)(ph * 0.30f), 24, 64);
-  int vpx = gfx4::fittedPx(value, pw - 40, vtar);
-  int vw = gfx4::textWidth(value, vpx);
-  int upx = clampi(vpx * 6 / 10, 16, 40);
-  int uw = gUnit[0] ? gfx4::textWidth(gUnit, upx) : 0;
-  // textWidth() (BB_FONT getStringBox) over-reports this font's width by a
-  // roughly constant ~1.6em of phantom trailing advance, so placing the unit at
-  // gx+vw floats it far right ("28      %"). Subtract that trailing (scaled by
-  // the value's font size) so the unit lands just past the digits' real ink
-  // ("28%"); a 40%-of-width floor guards short values from an overlap.
-  int uoff = vw - (vpx * 8) / 5;
-  int floor = (vw * 40) / 100;
-  if (uoff < floor) uoff = floor;
-  int total = uw ? (uoff + uw) : vw;
-  int gx = px + (pw - total) / 2;
-  if (gx < px + 8) gx = px + 8;
+  int vpx = gfx4::fittedPx(vu, pw - 24, vtar);
   int vy = py + ph / 2 - vpx / 2;
-  gfx4::drawTextFit(gx, vy, pw, vpx, value, GRAY_BLACK);
-  if (uw) gfx4::drawTextFit(gx + uoff, vy + (vpx - upx), pw, upx, gUnit, 4);
+  gfx4::drawTextCenteredFit(px, vy, pw, vpx, vu, GRAY_BLACK);
 
   // Sparkline in the bottom band.
   if (sparkN >= 2) {

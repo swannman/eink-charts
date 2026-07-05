@@ -533,7 +533,12 @@ def build_stat_panel(panel_data: dict[str, Any], unit: str, decimals: int) -> di
         y_max = float(y_axis.get("max", 1.0))
         rng = y_max - y_min if y_max > y_min else 1.0
         raw = y_min + last_ny * rng
-        value_str = _format_tick(raw, max(0, min(decimals, 4)))
+        # Honour the panel's decimals exactly: 0 → a plain integer ("34", not
+        # "34.0"). _format_tick isn't used here because its 0-decimals path falls
+        # back to one decimal for non-round values (needed for 2.5-step axis
+        # ticks, but wrong for a stat value the user set to 0 decimals).
+        d = max(0, min(decimals, 4))
+        value_str = f"{raw:.{d}f}" if d > 0 else str(int(round(raw)))
         # Sparkline reuses the same normalized [0,1] points. Subsample to ~60
         # for stat columns — denser than that adds bytes without visible gain
         # at the narrow column widths.
