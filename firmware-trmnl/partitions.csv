@@ -1,0 +1,9 @@
+# TRMNL X partition table. 16 MB flash. App at the standard 0x10000 offset
+# (where the pioarduino uploader writes it). NVS is sized up to ~24 KB — the
+# largest window available before the app — enough for the cached dashboard
+# bundle (a few KB, up to ~15 KB) plus the X25519 keystore.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xF000,   0x1000,
+factory,  app,  factory, 0x10000,  0x3F0000,
+storage,  data, littlefs,0x400000, 0xC00000,

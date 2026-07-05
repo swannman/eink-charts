@@ -1,0 +1,5 @@
+; Copy to platformio.local.ini (gitignored) to override the serial port etc.
+; without touching the tracked platformio.ini.
+[env:trmnl_x]
+; upload_port = /dev/cu.usbmodemXXXX
+; monitor_port = /dev/cu.usbmodemXXXX
