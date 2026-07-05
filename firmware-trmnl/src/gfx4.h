@@ -29,6 +29,13 @@ int drawTextCenteredFit(int x, int y, int w, int target_px, const char* s, uint8
 // Right-align `s` so it ends at right_x.
 int drawTextRightFit(int right_x, int y, int max_w, int target_px, const char* s, uint8_t color);
 
+// Same, in the light (Thin) family — for y-axis tick labels.
+int drawTextRightFitLight(int right_x, int y, int max_w, int target_px, const char* s, uint8_t color);
+
+// The nominal px of the light font that would be used for `s` (light analogue
+// of fittedPx) — so callers can size a row of labels uniformly.
+int fittedPxLight(const char* s, int max_w, int target_px);
+
 // A mostly-horizontal chart polyline segment with pixel thickness (drawn as
 // stacked 1px lines). Clipped to the screen.
 void thickLine(int x0, int y0, int x1, int y1, uint8_t color, int thickness);

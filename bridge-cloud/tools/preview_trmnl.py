@@ -149,16 +149,13 @@ def _draw_timeseries(draw, x, y, w, h, panel):
 def _draw_stat(draw, x, y, w, h, panel):
     base = panel.get("base_gray", 15)
     # Light tinted tile + a status accent bar across the top.
+    # Tinted status card, no top accent bar (the tint alone carries the status).
     draw.rectangle([x + PANEL_GUTTER, y + PANEL_GUTTER,
                     x + w - PANEL_GUTTER, y + h - PANEL_GUTTER],
                    fill=tile_bg(base), outline=g2l(9), width=1)
-    if base < 15:
-        draw.rectangle([x + PANEL_GUTTER, y + PANEL_GUTTER,
-                        x + w - PANEL_GUTTER, y + PANEL_GUTTER + max(6, h // 18)],
-                       fill=g2l(base))
 
     tf = _fit_font(draw, panel["title"], w - 28, min(max(h * 0.15, 20), 40))
-    draw.text((x + 16, y + 14), panel["title"], fill=0, font=tf)
+    draw.text((x + 16, y + 14), panel["title"], fill=g2l(10), font=tf)
 
     # Value + unit as one string in one font (mirror firmware) so the font's own
     # kerning handles the spacing and the unit matches the digits' size.

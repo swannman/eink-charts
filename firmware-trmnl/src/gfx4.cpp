@@ -1,5 +1,7 @@
 #include "gfx4.h"
 
+#include <Group5.h>          // BB_FONT / BB_GLYPH glyph metrics (for ink-extent align)
+
 #include "config.h"
 #include "display_trmnl.h"   // extern FASTEPD epd
 
@@ -56,6 +58,44 @@ int widthAt(const FontEntry* fonts, int idx, const char* s) {
   return r.w;
 }
 
+// The x of the rightmost ink pixel of `s` relative to the pen start, walking the
+// glyph metrics directly. getStringBox() returns the pen-*advance* width, whose
+// trailing padding varies with the glyphs (a '.' sits in a wide advance cell),
+// so right-aligning by it leaves decimal labels shifted left of integer ones.
+// Aligning by the real ink extent instead makes every label's last pixel land
+// on the same column. Handles both BB_FONT layouts; -1 if the marker is neither
+// (caller falls back to advance width). The vendored Roboto fonts are "small".
+int inkRightAt(const FontEntry* fonts, int idx, const char* s) {
+  const uint8_t* fd = fonts[idx].font;
+  uint16_t marker = (uint16_t)fd[0] | ((uint16_t)fd[1] << 8);
+  int penX = 0, inkR = 0;
+  if (marker == BB_FONT_MARKER) {
+    const BB_FONT* f = (const BB_FONT*)fd;
+    for (const char* p = s; *p; ++p) {
+      unsigned c = (unsigned char)*p;
+      if (c < f->first || c > f->last) continue;
+      const BB_GLYPH* g = &f->glyphs[c - f->first];
+      int r = penX + g->xOffset + (int)g->width;
+      if (r > inkR) inkR = r;
+      penX += g->xAdvance;
+    }
+    return inkR;
+  }
+  if (marker == BB_FONT_MARKER_SMALL) {
+    const BB_FONT_SMALL* f = (const BB_FONT_SMALL*)fd;
+    for (const char* p = s; *p; ++p) {
+      unsigned c = (unsigned char)*p;
+      if (c < f->first || c > f->last) continue;
+      const BB_GLYPH_SMALL* g = &f->glyphs[c - f->first];
+      int r = penX + g->xOffset + (int)g->width;
+      if (r > inkR) inkR = r;
+      penX += g->xAdvance;
+    }
+    return inkR;
+  }
+  return -1;
+}
+
 // Pick the font: start at target, shrink until it fits max_w (or smallest).
 int chooseIdx(const FontEntry* fonts, int n, const char* s, int max_w, int target_px) {
   int idx = fontIndexFor(fonts, n, target_px);
@@ -81,8 +121,12 @@ int drawWith(const FontEntry* fonts, int n, int x, int y, int max_w,
   epd.setTextColor(color, BBEP_TRANSPARENT);
   int tw = (align != 0) ? widthAt(fonts, idx, s) : 0;
   int dx = x;
-  if (align == 1) dx = x + (box_w - tw) / 2;   // centered in [x, x+box_w]
-  else if (align == 2) dx = x - tw;            // right-aligned to x
+  if (align == 1) {
+    dx = x + (box_w - tw) / 2;   // centered in [x, x+box_w]
+  } else if (align == 2) {       // right-aligned: land the last ink pixel on x
+    int ink = inkRightAt(fonts, idx, s);
+    dx = x - (ink >= 0 ? ink : tw);
+  }
   epd.drawString(s, dx, baselineFor(y, s));
   return fonts[idx].px;
 }
@@ -111,6 +155,14 @@ int drawTextCenteredFit(int x, int y, int w, int target_px, const char* s, uint8
 
 int drawTextRightFit(int right_x, int y, int max_w, int target_px, const char* s, uint8_t color) {
   return drawWith(FONTS, NFONTS, right_x, y, max_w, target_px, s, color, 2, 0);
+}
+
+int drawTextRightFitLight(int right_x, int y, int max_w, int target_px, const char* s, uint8_t color) {
+  return drawWith(LIGHT_FONTS, NLIGHT, right_x, y, max_w, target_px, s, color, 2, 0);
+}
+
+int fittedPxLight(const char* s, int max_w, int target_px) {
+  return LIGHT_FONTS[chooseIdx(LIGHT_FONTS, NLIGHT, s, max_w, target_px)].px;
 }
 
 void thickLine(int x0, int y0, int x1, int y1, uint8_t color, int thickness) {
