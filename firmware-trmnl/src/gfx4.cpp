@@ -119,13 +119,19 @@ int drawWith(const FontEntry* fonts, int n, int x, int y, int max_w,
   int idx = chooseIdx(fonts, n, s, max_w, target_px);
   epd.setFont(fonts[idx].font, /*bAntiAliased=*/true);
   epd.setTextColor(color, BBEP_TRANSPARENT);
-  int tw = (align != 0) ? widthAt(fonts, idx, s) : 0;
+  // FastEPD renders anti-aliased glyphs at HALF the font's design size (it draws
+  // into a 2x canvas and downsamples 2->1), but getStringBox()/inkRightAt() report
+  // DESIGN units. So the on-screen extent is half the measured value — scale by
+  // /2 before positioning, or centered/right-aligned text drifts left by ~half its
+  // own width (worse for longer strings, which is why decimals/negatives were the
+  // most misaligned).
+  int tw = (align != 0) ? widthAt(fonts, idx, s) / 2 : 0;   // screen width
   int dx = x;
   if (align == 1) {
     dx = x + (box_w - tw) / 2;   // centered in [x, x+box_w]
   } else if (align == 2) {       // right-aligned: land the last ink pixel on x
     int ink = inkRightAt(fonts, idx, s);
-    dx = x - (ink >= 0 ? ink : tw);
+    dx = x - (ink >= 0 ? ink / 2 : tw);
   }
   epd.drawString(s, dx, baselineFor(y, s));
   return fonts[idx].px;
@@ -173,6 +179,36 @@ void thickLine(int x0, int y0, int x1, int y1, uint8_t color, int thickness) {
     int ya = clamp(y0 + yo, 0, SCREEN_H - 1);
     int yb = clamp(y1 + yo, 0, SCREEN_H - 1);
     epd.drawLine(x0, ya, x1, yb, color);
+  }
+}
+
+void lightenToGray(int x0, int y0, int x1, int y1, uint8_t targetGray) {
+  // FastEPD's anti-aliased text renderer ignores setTextColor and always draws
+  // black (grayColors[]={15,12,6,0}), so we draw text black then lighten it here.
+  // Remap each pixel toward white by (15-targetGray)/15: a black pixel (0)
+  // becomes `targetGray`, white (15) stays white, and the AA edge ramp scales
+  // proportionally — yielding smooth gray text. Only call over regions that are
+  // white apart from the text (titles/labels on the plot's white margins); a
+  // band or line inside the rect would be lightened too.
+  if (targetGray >= 15 || targetGray == 0) return;  // 0 = leave black, 15 = white: both no-ops
+  uint8_t* buf = epd.currentBuffer();
+  if (!buf) return;
+  const int pitch = SCREEN_W >> 1;            // 4bpp: 2 px/byte, native_width=SCREEN_W
+  const int num = 15 - targetGray;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > SCREEN_W) x1 = SCREEN_W;
+  if (y1 > SCREEN_H) y1 = SCREEN_H;
+  for (int y = y0; y < y1; y++) {
+    int row = y * pitch;
+    for (int x = x0; x < x1; x++) {
+      int i = (x >> 1) + row;
+      uint8_t b = buf[i];
+      uint8_t p = (x & 1) ? (b & 0x0f) : (b >> 4);
+      int np = 15 - (15 - p) * num / 15;      // lighten toward white
+      if (np < 0) np = 0; else if (np > 15) np = 15;
+      buf[i] = (x & 1) ? ((b & 0xf0) | np) : ((b & 0x0f) | (np << 4));
+    }
   }
 }
 

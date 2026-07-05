@@ -16,10 +16,11 @@ namespace {
 
 // Layout constants — MUST mirror tools/preview_trmnl.py.
 constexpr int PANEL_GUTTER = 6;
-// Panel titles + y-axis tick labels: Roboto Black at a light gray so they frame
-// the data without competing with the plotted line.
-constexpr uint8_t TITLE_GRAY = 10;
-constexpr uint8_t YAXIS_GRAY = 10;
+// Panel titles are drawn full black (they name the widget); y-axis tick labels
+// are a light gray so they frame the data without competing with the line. Both
+// are drawn black then post-lightened to these targets (0 = leave black).
+constexpr uint8_t TITLE_GRAY = 0;
+constexpr uint8_t YAXIS_GRAY = 6;
 const uint8_t SERIES_GRAYS[] = {0, 6, 10, 3};
 
 // Holds a full 4x series (~3200 pts) so a high-res chart isn't truncated. Two
@@ -126,8 +127,11 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
   top = py + tb_h + 6;
   bot = py + ph - PANEL_GUTTER - 6;   // no x-axis labels: reclaim the bottom
 
-  // Title left-aligned with the plot's left edge (where the x-axis begins).
-  gfx4::drawTextFit(left, py + 6, (px + pw - PANEL_GUTTER) - left, titlePx, gTitle, TITLE_GRAY);
+  // Title left-aligned with the plot's left edge (where the x-axis begins). Drawn
+  // black (FastEPD's AA renderer ignores color), then lightened to TITLE_GRAY over
+  // the title band — which is white apart from the title text.
+  gfx4::drawTextFit(left, py + 6, (px + pw - PANEL_GUTTER) - left, titlePx, gTitle, GRAY_BLACK);
+  gfx4::lightenToGray(left, py + 7, px + pw - PANEL_GUTTER - 2, py + tb_h + 5, TITLE_GRAY);
 
   if (right - left < 20 || bot - top < 20) { left = right = top = bot = 0; return; }
   int plotW = right - left, plotH = bot - top;
@@ -157,13 +161,18 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
     float pos = std::min(1.0f, std::max(0.0f, gYLPos[i]));
     int gy = bot - (int)(pos * plotH);
     gfx4::dottedHLine(left + 2, right, gy, 12);
-    // FastEPD measures the '.' glyph's advance but under-renders it, so a label
-    // with a decimal lands ~3/4 em left of an integer one — visibly ragged on a
-    // right-aligned axis. Nudge decimal labels back right to match the integers.
-    int rx = left - 6;
-    if (strchr(gYL[i], '.')) rx += labPx * 3 / 4;
-    gfx4::drawTextRightFit(rx, gy - labPx / 2, 46, labPx, gYL[i], YAXIS_GRAY);
+    // drawTextRightFit right-aligns by true (screen) ink extent, so integer and
+    // decimal labels alike land their final digit on the same column. Drawn black
+    // (FastEPD's AA renderer ignores color); lightened to YAXIS_GRAY below.
+    gfx4::drawTextRightFit(left - 6, gy - labPx / 2, 46, labPx, gYL[i], GRAY_BLACK);
   }
+  // The label gutter (left of the plot, right of the panel frame) is white apart
+  // from the tick labels and holds no gridlines/bands at any y, so lighten the
+  // whole strip to turn the black labels a true gray. Extend to bot+labPx: the
+  // bottom (axis-min) label centers on `bot` but AA renders it a bit lower, so it
+  // would otherwise spill past the strip and stay black.
+  gfx4::lightenToGray(px + PANEL_GUTTER + 2, top - labPx, left - 4,
+                      bot + labPx, YAXIS_GRAY);
 }
 
 }  // namespace

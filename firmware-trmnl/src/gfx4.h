@@ -36,6 +36,13 @@ int drawTextRightFitLight(int right_x, int y, int max_w, int target_px, const ch
 // of fittedPx) — so callers can size a row of labels uniformly.
 int fittedPxLight(const char* s, int max_w, int target_px);
 
+// Lighten every pixel in [x0,x1)x[y0,y1) toward white so a black pixel becomes
+// gray level `targetGray`. FastEPD's anti-aliased text renderer ignores the text
+// color and always draws black, so the pattern is: draw text black, then call
+// this over the text's (white-background) region to turn it a true gray. Regions
+// containing bands/lines would be lightened too — only use it over text on white.
+void lightenToGray(int x0, int y0, int x1, int y1, uint8_t targetGray);
+
 // A mostly-horizontal chart polyline segment with pixel thickness (drawn as
 // stacked 1px lines). Clipped to the screen.
 void thickLine(int x0, int y0, int x1, int y1, uint8_t color, int thickness);

@@ -109,7 +109,7 @@ def _draw_timeseries(draw, x, y, w, h, panel):
     # Title: left-aligned with the plot's left edge, light gray (mirror firmware).
     tf = _fit_font(draw, title, (x + w - PANEL_GUTTER) - left, tb_h * 0.82)
     _, tth = _text_wh(draw, title, tf)
-    draw.text((left, y + 6 + (tb_h - tth) // 2), title, fill=g2l(10), font=tf)
+    draw.text((left, y + 6 + (tb_h - tth) // 2), title, fill=g2l(0), font=tf)
 
     if right - left < 20 or bot - top < 20:
         return
@@ -133,9 +133,9 @@ def _draw_timeseries(draw, x, y, w, h, panel):
         p = pos[i] if i < len(pos) else (i / (n - 1) if n > 1 else 0.0)
         gy = bot - int(max(0.0, min(1.0, p)) * ph)
         for gx in range(left + 2, right, 6):
-            draw.point((gx, gy), fill=g2l(10))
+            draw.point((gx, gy), fill=g2l(12))
         tw, th = _text_wh(draw, lab, lab_f)
-        draw.text((left - 6 - tw, gy - th // 2), lab, fill=g2l(10), font=lab_f)
+        draw.text((left - 6 - tw, gy - th // 2), lab, fill=g2l(6), font=lab_f)
 
     # Series lines.
     for si, pts in enumerate(panel.get("series") or []):
@@ -155,7 +155,7 @@ def _draw_stat(draw, x, y, w, h, panel):
                    fill=tile_bg(base), outline=g2l(9), width=1)
 
     tf = _fit_font(draw, panel["title"], w - 28, min(max(h * 0.15, 20), 40))
-    draw.text((x + 16, y + 14), panel["title"], fill=g2l(10), font=tf)
+    draw.text((x + 16, y + 14), panel["title"], fill=g2l(0), font=tf)
 
     # Value + unit as one string in one font (mirror firmware) so the font's own
     # kerning handles the spacing and the unit matches the digits' size.
