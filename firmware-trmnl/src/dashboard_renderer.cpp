@@ -16,12 +16,10 @@ namespace {
 
 // Layout constants — MUST mirror tools/preview_trmnl.py.
 constexpr int PANEL_GUTTER = 6;
-// Panel titles + y-axis tick labels: drawn in the light (Thin) font family at a
-// light gray so they frame the data without competing with the plotted line.
-// The Thin weight is what makes them read light — the old Black font looked
-// heavy/dark even at a high gray.
-constexpr uint8_t TITLE_GRAY = 7;
-constexpr uint8_t YAXIS_GRAY = 7;
+// Panel titles + y-axis tick labels: Roboto Black at a light gray so they frame
+// the data without competing with the plotted line.
+constexpr uint8_t TITLE_GRAY = 10;
+constexpr uint8_t YAXIS_GRAY = 10;
 const uint8_t SERIES_GRAYS[] = {0, 6, 10, 3};
 
 // Holds a full 4x series (~3200 pts) so a high-res chart isn't truncated. Two
@@ -85,7 +83,7 @@ void renderStat(int px, int py, int pw, int ph, uint8_t base_gray, int sparkN) {
   epd.fillRect(x0, y0, x1 - x0, y1 - y0, tileBg(base_gray));
 
   int titlePx = clampi((int)(ph * 0.09f), 18, 28);
-  gfx4::drawTextFitLight(px + 16, py + 10, pw - 28, titlePx, gTitle, TITLE_GRAY);
+  gfx4::drawTextFit(px + 16, py + 10, pw - 28, titlePx, gTitle, TITLE_GRAY);
 
   // Value + unit as a single string in one font ("34%"), so the font's own
   // metrics handle the size and kerning — drawing them separately made the unit
@@ -129,7 +127,7 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
   bot = py + ph - PANEL_GUTTER - 6;   // no x-axis labels: reclaim the bottom
 
   // Title left-aligned with the plot's left edge (where the x-axis begins).
-  gfx4::drawTextFitLight(left, py + 6, (px + pw - PANEL_GUTTER) - left, titlePx, gTitle, TITLE_GRAY);
+  gfx4::drawTextFit(left, py + 6, (px + pw - PANEL_GUTTER) - left, titlePx, gTitle, TITLE_GRAY);
 
   if (right - left < 20 || bot - top < 20) { left = right = top = bot = 0; return; }
   int plotW = right - left, plotH = bot - top;
@@ -152,7 +150,7 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
   int labTar = clampi((int)(ph * 0.06f), 16, 20);
   int labPx = labTar;
   for (int i = 0; i < yn; i++) {
-    int fp = gfx4::fittedPxLight(gYL[i], 44, labTar);
+    int fp = gfx4::fittedPx(gYL[i], 44, labTar);
     if (fp < labPx) labPx = fp;
   }
   for (int i = 0; i < yn; i++) {
@@ -164,7 +162,7 @@ void renderTimeseriesFrame(int px, int py, int pw, int ph, int yn,
     // right-aligned axis. Nudge decimal labels back right to match the integers.
     int rx = left - 6;
     if (strchr(gYL[i], '.')) rx += labPx * 3 / 4;
-    gfx4::drawTextRightFitLight(rx, gy - labPx / 2, 46, labPx, gYL[i], YAXIS_GRAY);
+    gfx4::drawTextRightFit(rx, gy - labPx / 2, 46, labPx, gYL[i], YAXIS_GRAY);
   }
 }
 

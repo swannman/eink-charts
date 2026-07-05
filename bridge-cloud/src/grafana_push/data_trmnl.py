@@ -129,8 +129,8 @@ def gray_for_color(color: str | None) -> int:
 # out-of-range zones get a faint tint — red slightly stronger than yellow — so
 # it's clear when the line leaves the desired range without the band competing
 # with the plotted line. Kept near-white on purpose (~1-2 levels of darkness).
-BAND_GRAY_ALERT = 13   # red / danger  (was 11)
-BAND_GRAY_WARN = 14    # yellow / orange (was 13)
+BAND_GRAY_ALERT = 12   # red / danger  (kept one step darker than warn)
+BAND_GRAY_WARN = 13    # yellow / orange (slightly darker than the old 14)
 
 
 def band_gray_for_color(color: str | None) -> int:

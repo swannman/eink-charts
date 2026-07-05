@@ -109,7 +109,7 @@ def _draw_timeseries(draw, x, y, w, h, panel):
     # Title: left-aligned with the plot's left edge, light gray (mirror firmware).
     tf = _fit_font(draw, title, (x + w - PANEL_GUTTER) - left, tb_h * 0.82)
     _, tth = _text_wh(draw, title, tf)
-    draw.text((left, y + 6 + (tb_h - tth) // 2), title, fill=g2l(12), font=tf)
+    draw.text((left, y + 6 + (tb_h - tth) // 2), title, fill=g2l(10), font=tf)
 
     if right - left < 20 or bot - top < 20:
         return
@@ -135,7 +135,7 @@ def _draw_timeseries(draw, x, y, w, h, panel):
         for gx in range(left + 2, right, 6):
             draw.point((gx, gy), fill=g2l(10))
         tw, th = _text_wh(draw, lab, lab_f)
-        draw.text((left - 6 - tw, gy - th // 2), lab, fill=g2l(11), font=lab_f)
+        draw.text((left - 6 - tw, gy - th // 2), lab, fill=g2l(10), font=lab_f)
 
     # Series lines.
     for si, pts in enumerate(panel.get("series") or []):
