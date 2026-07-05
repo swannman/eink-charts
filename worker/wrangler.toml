@@ -7,7 +7,9 @@ binding = "BUNDLE"
 bucket_name = "einkcharts-bundle"
 
 [vars]
-MAX_BUNDLE_BYTES = "65536"
+# Per-object (per-dashboard) ceiling. Matches the device's ~224 KB per-dashboard
+# capacity so a full-resolution dashboard is never rejected.
+MAX_BUNDLE_BYTES = "262144"
 
 # BEARER_TOKEN is a secret, set via:
 #   wrangler secret put BEARER_TOKEN

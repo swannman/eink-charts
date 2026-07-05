@@ -14,6 +14,21 @@ const BUNDLE_KEY = "bundle";
 const BATTERY_KEY = "battery_history";
 const BATTERY_RETENTION_SECONDS = 7 * 24 * 3600;  // 7 days, matches the 7d zoom view
 
+// The TRMNL X is a second, independent device with its own sealed bundle and
+// its own battery history. Distinct R2 keys so the two never collide.
+// TRMNL bundles are now split one object per dashboard: bundle_trmnl_<index>.
+// The device prefetches them all (guided by the manifest) and serves the
+// slideshow from cache, so each dashboard gets the device's full capacity.
+const BUNDLE_TRMNL_KEY = "bundle_trmnl";       // + "_<index>"
+const MANIFEST_TRMNL_KEY = "manifest_trmnl";   // {count, etags} the device reads first
+const BATTERY_TRMNL_KEY = "battery_history_trmnl";
+
+// Last cache capacity the TRMNL X advertised (via the X-Bundle-Capacity header
+// on its bundle GET). The Pi reads this before building the next bundle so it
+// can scale chart resolution to fit the device — the server side of the
+// overflow defense.
+const CAPACITY_TRMNL_KEY = "capacity_trmnl";
+
 export default {
   async fetch(request, env) {
     const auth = request.headers.get("Authorization") ?? "";
@@ -22,20 +37,45 @@ export default {
     }
 
     const url = new URL(request.url);
-    if (url.pathname === "/bundle") return handleBundle(request, env);
-    if (url.pathname === "/battery") return handleBattery(request, env);
+    if (url.pathname === "/bundle") return handleBundle(request, env, BUNDLE_KEY);
+    if (url.pathname === "/bundle-trmnl") {
+      const d = parseInt(url.searchParams.get("d") ?? "", 10);
+      if (!Number.isInteger(d) || d < 0 || d > 63) {
+        return new Response("missing/invalid ?d (0-63)", { status: 400 });
+      }
+      return handleBundle(request, env, `${BUNDLE_TRMNL_KEY}_${d}`, CAPACITY_TRMNL_KEY);
+    }
+    if (url.pathname === "/manifest-trmnl") return handleBundle(request, env, MANIFEST_TRMNL_KEY);
+    if (url.pathname === "/capacity-trmnl") return handleCapacity(request, env, CAPACITY_TRMNL_KEY);
+    if (url.pathname === "/battery") return handleBattery(request, env, BATTERY_KEY);
+    if (url.pathname === "/battery-trmnl") return handleBattery(request, env, BATTERY_TRMNL_KEY);
     return new Response("not found", { status: 404 });
   },
 };
 
-async function handleBundle(request, env) {
+async function handleBundle(request, env, key, capacityKey) {
+  // On a device GET, record the cache capacity it advertised so the Pi can
+  // fit the next bundle to it. Best-effort — a bad/absent header just leaves
+  // the last known value in place.
+  if (capacityKey && (request.method === "GET" || request.method === "HEAD")) {
+    const raw = request.headers.get("X-Bundle-Capacity");
+    const cap = raw ? parseInt(raw, 10) : NaN;
+    if (Number.isFinite(cap) && cap > 0 && cap < 1 << 24) {
+      await env.BUNDLE.put(
+        capacityKey,
+        JSON.stringify({ cap, reportedAt: new Date().toISOString() }),
+        { httpMetadata: { contentType: "application/json" } },
+      );
+    }
+  }
+
   if (request.method === "PUT") {
-    const maxBytes = parseInt(env.MAX_BUNDLE_BYTES, 10) || 65536;
+    const maxBytes = parseInt(env.MAX_BUNDLE_BYTES, 10) || 262144;
     const body = await request.arrayBuffer();
     if (body.byteLength > maxBytes) {
       return new Response("payload too large", { status: 413 });
     }
-    await env.BUNDLE.put(BUNDLE_KEY, body, {
+    await env.BUNDLE.put(key, body, {
       httpMetadata: { contentType: "application/octet-stream" },
       customMetadata: { uploadedAt: new Date().toISOString() },
     });
@@ -43,7 +83,7 @@ async function handleBundle(request, env) {
   }
 
   if (request.method === "GET" || request.method === "HEAD") {
-    const obj = await env.BUNDLE.get(BUNDLE_KEY);
+    const obj = await env.BUNDLE.get(key);
     if (!obj) return new Response("no bundle yet", { status: 404 });
 
     const currentEtag = `"${obj.etag}"`;
@@ -69,7 +109,19 @@ async function handleBundle(request, env) {
   return new Response("method not allowed", { status: 405 });
 }
 
-async function handleBattery(request, env) {
+async function handleCapacity(request, env, key) {
+  // Read-only for the Pi. Returns {cap, reportedAt} or {} if the device has
+  // not reported yet, so the caller can fall back to a conservative default.
+  if (request.method === "GET" || request.method === "HEAD") {
+    const obj = await env.BUNDLE.get(key);
+    const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
+    if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+    return new Response(obj ? obj.body : "{}", { status: 200, headers });
+  }
+  return new Response("method not allowed", { status: 405 });
+}
+
+async function handleBattery(request, env, key) {
   if (request.method === "PUT") {
     // Body: {"mv": <int>}. Anything else is rejected so junk doesn't poison
     // the history.
@@ -80,16 +132,16 @@ async function handleBattery(request, env) {
       return new Response("invalid mv (expected number 2500-5000)", { status: 400 });
     }
 
-    let history = await loadBatteryHistory(env);
+    let history = await loadBatteryHistory(env, key);
     const now = Math.floor(Date.now() / 1000);
     history.push({ ts: now, mv: Math.round(mv) });
 
-    // Prune to retention window. Single writer (the X3) at low frequency,
+    // Prune to retention window. Single writer per device at low frequency,
     // so read-modify-write is safe enough.
     const cutoff = now - BATTERY_RETENTION_SECONDS;
     history = history.filter((e) => e.ts >= cutoff);
 
-    await env.BUNDLE.put(BATTERY_KEY, JSON.stringify(history), {
+    await env.BUNDLE.put(key, JSON.stringify(history), {
       httpMetadata: { contentType: "application/json" },
       customMetadata: { uploadedAt: new Date().toISOString() },
     });
@@ -97,7 +149,7 @@ async function handleBattery(request, env) {
   }
 
   if (request.method === "GET" || request.method === "HEAD") {
-    const obj = await env.BUNDLE.get(BATTERY_KEY);
+    const obj = await env.BUNDLE.get(key);
     const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
     if (!obj) {
       // No readings yet — return empty array rather than 404 so the Pi can
@@ -112,8 +164,8 @@ async function handleBattery(request, env) {
   return new Response("method not allowed", { status: 405 });
 }
 
-async function loadBatteryHistory(env) {
-  const obj = await env.BUNDLE.get(BATTERY_KEY);
+async function loadBatteryHistory(env, key) {
+  const obj = await env.BUNDLE.get(key);
   if (!obj) return [];
   try {
     const arr = await obj.json();
