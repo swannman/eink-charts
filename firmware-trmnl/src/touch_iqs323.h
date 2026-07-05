@@ -45,4 +45,35 @@ Event readEvent();
 // configure() to re-stream config and return to event mode.
 bool swReset();
 
+// Hardware-reset the chip by pulsing its master-clear line (tied to RDY/GPIO3).
+// Needs no working I2C, so it recovers a chip whose comms have wedged (returning
+// 0xEE / RDY stuck low) — the case swReset() can't reach. Chip comes back streaming
+// with SHOW_RESET set; follow with configure().
+void hwReset();
+
+// True if the RDY line is idling HIGH (event mode armed, no tap pending). Pure
+// GPIO read — no I2C — so it reflects the chip's resting state. Used before sleep
+// to confirm the chip won't immediately assert ext0 (which would spin-wake us).
+bool rdyIdleHigh();
+
+// Debug: read the full 18-byte report (0x10..0x18) and parse out the live
+// per-channel raw counts + slider coordinate. Unlike readEvent()'s touch bit,
+// the counts move as a finger merely APPROACHES the bar (sub-threshold), so this
+// tells us whether the sensor feels the finger at all — independent of ATI
+// thresholds and the RDY interrupt. Returns false on I2C failure.
+struct Report {
+  bool ok;
+  uint16_t status;     // 0x10 SYSTEM_STATUS word
+  uint16_t slider;     // 0x12 resolved slider coordinate
+  uint16_t ch[3];      // CH0/1/2 filtered counts (0x13/0x15/0x17)
+  uint16_t lta[3];     // CH0/1/2 long-term averages (baseline)
+};
+Report readReport();
+
+// Passive variant of readReport(): reads WITHOUT forcing a comms window, so it's
+// safe to call at a high rate. Only meaningful when RDY is already LOW (the chip
+// has opened its own window). Forcing a window every tick wedges the chip after
+// ~30 reads (returns 0xEE), so the interactive tap-poll loop must use this.
+Report readReportPassive();
+
 }  // namespace touch

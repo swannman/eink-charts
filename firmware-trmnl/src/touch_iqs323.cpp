@@ -74,6 +74,20 @@ bool readReg(uint8_t reg, uint8_t* buf, uint8_t len) {
   return got == len;
 }
 
+// Passive read: read `len` bytes from `reg` WITHOUT forcing a comms window. Only
+// valid when the chip has already opened a window on its own (RDY is LOW). The
+// official firmware warns that forcing a window (our 0xFF poke) on every poll tick
+// wedges the IQS323 after ~30 reads — it stops ACKing and returns 0xEE fill. So
+// for high-rate polling (the interactive tap window) we must read passively.
+bool readRegPassive(uint8_t reg, uint8_t* buf, uint8_t len) {
+  Wire.beginTransmission(IQS323_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;  // repeated start
+  uint8_t got = Wire.requestFrom((int)IQS323_ADDR, (int)len, (int)true);  // STOP
+  for (uint8_t i = 0; i < len && Wire.available(); i++) buf[i] = Wire.read();
+  return got == len;
+}
+
 // Write `len` bytes starting at `reg`; STOP closes the window.
 bool writeReg(uint8_t reg, const uint8_t* buf, uint8_t len) {
   if (!openWindow()) return false;
@@ -112,6 +126,25 @@ bool swReset() {
   bool ok = writeReg(MM_SYSTEM_CONTROL, c, 2);
   delay(200);  // chip reboots into streaming mode before we reconfigure
   return ok;
+}
+
+// Hardware-reset the IQS323 by pulsing its master-clear line. On this board MCLR is
+// tied to the RDY pin (GPIO3), so we briefly drive it LOW as an output, then return
+// it to a high-impedance input (the board pull-up restores RDY). Unlike swReset()
+// this needs NO working I2C, so it recovers a chip whose comms have wedged (stuck
+// returning 0xEE fill / RDY stuck low) — the case a software reset can't reach. The
+// chip reboots into streaming mode flagging SHOW_RESET; follow with configure().
+// Only ever drives the pin LOW (never HIGH), so it's electrically safe against the
+// chip's open-drain RDY regardless.
+void hwReset() {
+  // MCLR pulse timings mirror the official TRMNL iqs323_task: 150us RDY->MCLR
+  // switchover, 500us pulse (min 250ns), 150ms recovery + settle before I2C.
+  delayMicroseconds(150);          // RDY -> MCLR switchover
+  pinMode(TOUCH_RDY_GPIO, OUTPUT);
+  digitalWrite(TOUCH_RDY_GPIO, LOW);
+  delayMicroseconds(500);          // hold master-clear low
+  pinMode(TOUCH_RDY_GPIO, INPUT);  // release — pull-up brings RDY back high
+  delay(150);                      // reset recovery + settle before we touch I2C
 }
 
 // Poll SYSTEM_STATUS until ATI settles. Returns true on convergence.
@@ -217,8 +250,64 @@ bool configure() {
     Log.printf("touch: WARNING event-mode bit not set (ctrl0=0x%02X)\n", ctrl[0]);
   }
 
-  Log.println("touch: configured (event mode, touch events)");
+  // Decisive check: in event mode RDY must idle HIGH between taps. Wait one+
+  // measurement cycle WITHOUT poking the chip (a forced-comms read would pull RDY
+  // low itself and mask a streaming chip), then sample. If it's still LOW the chip
+  // is streaming (event mode didn't hold) — the caller must not arm ext0 on it.
+  delay(80);
+  bool idleHigh = digitalRead(TOUCH_RDY_GPIO) == HIGH;
+  Log.printf("touch: configured; post-config RDY idle=%s (event mode %s)\n",
+             idleHigh ? "HIGH" : "LOW", idleHigh ? "armed" : "NOT holding");
   return true;
+}
+
+// True if RDY is idling HIGH right now (event mode armed, no tap pending). Sampled
+// without any I2C so it reflects the chip's resting state, not a forced window.
+bool rdyIdleHigh() { return digitalRead(TOUCH_RDY_GPIO) == HIGH; }
+
+// Fill a Report from an 18-byte 0x10 memory-map read (shared by the forced and
+// passive variants). Rejects the all-0xEE not-ready fill.
+static Report parseReport(const uint8_t* b, bool readOk) {
+  Report r = {};
+  if (!readOk) return r;
+  if (b[0] == 0xEE && b[1] == 0xEE) return r;  // chip not ready / wedged
+  r.ok = true;
+  auto u16 = [&](int i) -> uint16_t { return (uint16_t)b[i] | ((uint16_t)b[i + 1] << 8); };
+  r.status = u16(0);
+  r.slider = u16(4);
+  r.ch[0] = u16(6);   r.lta[0] = u16(8);
+  r.ch[1] = u16(10);  r.lta[1] = u16(12);
+  r.ch[2] = u16(14);  r.lta[2] = u16(16);
+  return r;
+}
+
+// Passive report read — NO forced comms window. Call only when RDY is already LOW
+// (the chip opened its own window). Safe for high-rate polling; forcing would
+// wedge the chip (see readRegPassive).
+Report readReportPassive() {
+  Wire.setTimeOut(300);
+  uint8_t b[18] = {0};
+  return parseReport(b, readRegPassive(MM_SYSTEM_STATUS, b, 18));
+}
+
+Report readReport() {
+  Wire.setTimeOut(300);
+  Report r = {};
+  uint8_t b[18] = {0};
+  // 0x10..0x18: STATUS[2] GESTURES[2] SLIDER[2] CH0 cnt/lta[4] CH1[4] CH2[4].
+  if (!readReg(MM_SYSTEM_STATUS, b, 18)) return r;
+  // The IQS323 returns 0xEE fill bytes when addressed while it isn't ready (e.g.
+  // mid-reset). Those bytes decode into bogus "touched/reset" flags, so treat an
+  // all-0xEE status word as a failed read rather than real data.
+  if (b[0] == 0xEE && b[1] == 0xEE) return r;
+  r.ok = true;
+  auto u16 = [&](int i) -> uint16_t { return (uint16_t)b[i] | ((uint16_t)b[i + 1] << 8); };
+  r.status = u16(0);
+  r.slider = u16(4);
+  r.ch[0] = u16(6);   r.lta[0] = u16(8);
+  r.ch[1] = u16(10);  r.lta[1] = u16(12);
+  r.ch[2] = u16(14);  r.lta[2] = u16(16);
+  return r;
 }
 
 Event readEvent() {

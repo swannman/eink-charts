@@ -30,6 +30,12 @@ RTC_DATA_ATTR static uint32_t rtcDashIndex = 0;
 RTC_DATA_ATTR static uint32_t rtcWakesSinceFetch = 0;
 RTC_DATA_ATTR static uint8_t rtcTouchReady = 0;  // IQS323 configured into event mode
 RTC_DATA_ATTR static uint8_t rtcDashCount = 0;   // cached dashboards (slideshow modulus)
+// Re-arm outcome from the PREVIOUS goToSleep, printed on the next boot. The
+// re-arm logs themselves are lost to the USB-CDC power-down at deep sleep, so we
+// stash the result in RTC RAM and report it after the next wake instead.
+RTC_DATA_ATTR static uint8_t rtcLastCfgOk = 0xFF;   // configure() return (ATI etc.)
+RTC_DATA_ATTR static uint8_t rtcLastArmed = 0xFF;   // RDY idled HIGH → ext0 armed
+RTC_DATA_ATTR static uint8_t rtcLastCfgTries = 0;   // how many configure() attempts
 constexpr uint32_t RTC_MAGIC_VALUE = 0x54524d4eu;  // 'TRMN'
 
 // Wi-Fi re-fetch cadence expressed in wake cycles (no NTP needed): fetch a
@@ -408,18 +414,75 @@ static bool renderIndexFromCache(uint32_t index) {
   return ok;
 }
 
+// (The stay-awake interactive tap window was removed — the 4bpp full refresh
+// electrically resets the touch chip every advance, so polling it while awake
+// fought that and oscillated between stuck and runaway. Tap-to-advance is handled
+// by the deep-sleep ext0 wake path: one tap = one wake->advance->render->sleep,
+// and the sleep re-arm cleanly resets + re-ATIs the chip. See git history for the
+// failed polling approach; a proper interrupt-driven background task is future work.)
+
 // ---- Deep sleep --------------------------------------------------------------
 static void goToSleep() {
   esp_sleep_enable_timer_wakeup(DWELL_SECONDS * 1000000ULL);
-#if ENABLE_TOUCH
-  // Touch RDY is active-LOW and idles HIGH via the board pull-up; hold a pull-up
-  // through sleep so a floating line can't spuriously wake ext0.
-  rtc_gpio_pullup_en((gpio_num_t)TOUCH_RDY_GPIO);
-  rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_RDY_GPIO);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_RDY_GPIO, 0);  // wake on RDY LOW
-#endif
+
+  // Power the EPD down FIRST, before we re-arm touch. The full-screen refresh
+  // disrupts the IQS323 on the shared sensor rail — reconfiguring while the panel
+  // is still powered makes ATI fail (it converges fine on a fresh boot precisely
+  // because configure() runs before display::begin()). Cutting EPD power and
+  // letting the rail settle recreates that clean condition, so ATI converges and
+  // the chip actually holds event mode.
   display_trmnl::sleep();
-  Log.printf("deep sleep %llus (touch=%d)\n", (unsigned long long)DWELL_SECONDS, ENABLE_TOUCH);
+
+#if ENABLE_TOUCH
+  delay(150);  // let the sensor rail settle after EPD power-down before ATI
+  // Re-arm event mode and CONFIRM RDY idles HIGH before trusting ext0: a chip
+  // left STREAMING (RDY pulsing every ~60ms) would assert ext0 immediately and
+  // spin-wake us forever, draining the battery. If it won't hold event mode after
+  // a few tries, fall back to timer-only wake for this cycle rather than risk a
+  // wake loop — touch just won't wake us until the next clean cycle.
+  // Always re-stream config + ATI + event mode here. We must NOT trust a single
+  // rdyIdleHigh() sample to skip this: after a refresh the chip streams (RDY
+  // flapping), and a momentary HIGH read would wrongly skip the reconfigure and
+  // arm ext0 on a chip that never fires on touch — killing touch-wake entirely.
+  bool touchArmed = false;
+  bool cfgOk = false;
+  uint8_t tries = 0;
+  for (int i = 0; i < 3 && !touchArmed; i++) {
+    tries++;
+    // Hardware-reset to a known-clean state BEFORE configuring. The 4bpp full
+    // refresh reliably leaves the IQS323 wedged (RDY stuck LOW, config writes NAK,
+    // e.g. "config write @0x30 failed") — a software reset can't reach a wedged
+    // chip, so configure() alone fails every retry and ext0 never arms. Pulsing
+    // master-clear (RDY/GPIO3) reboots it into streaming with SHOW_RESET set,
+    // exactly the clean state configure() expects.
+    touch::hwReset();
+    cfgOk = touch::configure();          // re-stream config, ATI, event mode
+    touchArmed = cfgOk && touch::rdyIdleHigh();  // configure() already waited a cycle
+    if (!touchArmed)
+      Log.printf("touch: re-arm %d — cfg=%d RDY=%d\n", i, (int)cfgOk,
+                 digitalRead(TOUCH_RDY_GPIO));
+  }
+  rtcTouchReady = touchArmed ? 1 : 0;
+  rtcLastCfgOk = cfgOk ? 1 : 0;      // stashed for the next boot to report
+  rtcLastArmed = touchArmed ? 1 : 0;
+  rtcLastCfgTries = tries;
+  if (touchArmed) {
+    // Touch RDY is active-LOW and idles HIGH via the board pull-up; hold a pull-up
+    // through sleep so a floating line can't spuriously wake ext0.
+    rtc_gpio_pullup_en((gpio_num_t)TOUCH_RDY_GPIO);
+    rtc_gpio_pulldown_dis((gpio_num_t)TOUCH_RDY_GPIO);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)TOUCH_RDY_GPIO, 0);  // wake on RDY LOW
+    Log.println("touch: ext0 armed (RDY idle HIGH)");
+  } else {
+    Log.println("touch: ext0 NOT armed — timer-only wake (chip won't hold event mode)");
+  }
+#endif
+  Log.printf("deep sleep %llus (touchArmed=%d)\n", (unsigned long long)DWELL_SECONDS,
+#if ENABLE_TOUCH
+             (int)touchArmed);
+#else
+             0);
+#endif
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -437,6 +500,13 @@ void setup() {
 
   Log.printf("\n=== TRMNL X boot wake=%d touch=%d first=%d index=%u ===\n",
              (int)cause, (int)touchWake, (int)firstBoot, (unsigned)rtcDashIndex);
+  // Report the previous sleep's touch re-arm outcome (its own logs were cut off by
+  // the USB-CDC power-down). 0xFF = no prior sleep this power cycle.
+  if (rtcLastArmed != 0xFF) {
+    Log.printf("touch: last re-arm cfgOk=%d armed=%d tries=%u (this wake %s)\n",
+               (int)rtcLastCfgOk, (int)rtcLastArmed, (unsigned)rtcLastCfgTries,
+               touchWake ? "IS ext0/touch" : "is timer/other");
+  }
 
   // Shared sensor I2C bus (touch + fuel gauge). Begin once — the TRMNL X S3
   // dislikes repeated Wire.begin(). 100 kHz for reliable IQS323 windowed comms.
@@ -473,10 +543,12 @@ void setup() {
   }
 #endif
 
-  // Decide whether to advance the slideshow and whether to redraw. A touch wake
-  // only advances if the chip reports an actual channel touch — a press/release
-  // pair or a spurious wake reads as "not touched" and we go straight back to
-  // sleep without a wasteful full-screen refresh.
+  // Decide whether to advance the slideshow and whether to redraw. An ext0 wake
+  // is itself the tap signal: in event mode the IQS323 only asserts RDY on a real
+  // touch/slider event, so the wake proves a tap happened. We do NOT re-check the
+  // touch bit — by the time we boot (~300ms of wake+I2C latency) the finger has
+  // usually already lifted, so it reads touched=0 and we'd wrongly skip the
+  // advance (the "tap does nothing" bug). Only a chip reset wake is not a tap.
   bool advance = true;
   bool doRender = true;
   bool didTimerWake = !touchWake && !firstBoot;
@@ -485,10 +557,15 @@ void setup() {
   } else if (touchWake) {
 #if ENABLE_TOUCH
     touch::Event ev = touch::readEvent();
-    Log.printf("touch: wake status=0x%04X touched=%d reset=%d\n",
+    Log.printf("touch: wake status=0x%04X touched=%d reset=%d -> advancing\n",
                ev.raw, (int)ev.touched, (int)ev.reset);
-    if (ev.reset && touchPresent) rtcTouchReady = touch::configure() ? 1 : 0;
-    if (!ev.touched) { advance = false; doRender = false; }
+    if (ev.reset && touchPresent) {
+      // Reset wake (not a tap): recover config and don't advance/render.
+      rtcTouchReady = touch::configure() ? 1 : 0;
+      advance = false;
+      doRender = false;
+    }
+    // else: genuine tap wake — advance even though touched may already read 0.
 #endif
   }
 
@@ -562,8 +639,18 @@ void setup() {
   wdtFeed();  // render done
 
 #if SERIAL_CONSOLE
-  serial_console::run(count, rtcDashIndex, renderIndexFromCache);
+  // Dev console on timer/first-boot wakes (host dumps, manual nav). On a TOUCH
+  // wake the interactive tap window below owns the awake period instead — it
+  // reconfigures the chip after the refresh reset, which the console poll doesn't.
+  if (!touchWake) serial_console::run(count, rtcDashIndex, renderIndexFromCache);
 #endif
+
+  // A tap wake has already advanced + rendered the new dashboard above; we now go
+  // straight to sleep, whose re-arm path powers the EPD down and cleanly resets +
+  // re-ATIs the touch chip for the next tap. (The stay-awake interactive window was
+  // removed — see the DISABLED block above: polling the chip while awake fights the
+  // refresh-induced reset and oscillates between stuck and runaway.)
+  (void)touchWake;
 
   goToSleep();
 }

@@ -77,11 +77,90 @@ void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
   uint32_t idle = millis();
   uint32_t limit = CONSOLE_IDLE_MS;  // short until the host first responds
   uint32_t lastTouchAdv = 0;         // debounce: one advance per press window
+#if ENABLE_TOUCH && TOUCH_DEBUG
+  int lastRdy = digitalRead(TOUCH_RDY_GPIO);
+  uint32_t lastBeat = 0;
+  uint32_t lastRecover = 0;  // rate-limit reset/garbage reconfigure attempts
+  Serial.printf("== TOUCH DEBUG: streaming RDY edges + status @%lums; device will NOT sleep ==\n",
+                (unsigned long)TOUCH_DEBUG_PERIOD_MS);
+  Serial.printf("[t=%lu] RDY start = %s\n", (unsigned long)millis(),
+                lastRdy ? "HIGH (idle)" : "LOW (asserted)");
+#endif
   while (millis() - idle < limit) {
 #if ENABLE_WATCHDOG
     esp_task_wdt_reset();  // the dev console can idle far longer than the WDT
 #endif
 #if ENABLE_TOUCH
+#if TOUCH_DEBUG
+    // Verbose streaming: keep the session alive forever and print two views of
+    // the touch state so we can see exactly where a tap does (or doesn't) land.
+    idle = millis();  // never time out into deep sleep while debugging
+    limit = CONSOLE_TIMEOUT_MS;
+    {
+      uint32_t nowMs = millis();
+      int rdy = digitalRead(TOUCH_RDY_GPIO);
+      // (1) Log every RDY transition the instant it happens — this is the raw
+      //     interrupt path. A tap SHOULD drive RDY low in event mode.
+      if (rdy != lastRdy) {
+        Serial.printf("[t=%lu] RDY -> %s\n", (unsigned long)nowMs,
+                      rdy ? "HIGH" : "LOW (asserted!)");
+        lastRdy = rdy;
+        if (rdy == LOW) {  // read immediately to catch short taps via the interrupt
+          touch::Event ev = touch::readEvent();
+          Serial.printf("[t=%lu]   edge read ok=%d raw=0x%04X touch=%d rst=%d\n",
+                        (unsigned long)nowMs, (int)ev.ok, ev.raw,
+                        (int)ev.touched, (int)ev.reset);
+        }
+      }
+      // (2) Force-read SYSTEM_STATUS at a fixed cadence regardless of RDY:
+      //     readEvent() opens its own comms window, so the channel/touch bits
+      //     show up here even if the interrupt never fires — this isolates a dead
+      //     interrupt path from a sensor that just doesn't feel the finger.
+      if (nowMs - lastBeat >= TOUCH_DEBUG_PERIOD_MS) {
+        lastBeat = nowMs;
+        // Read the full report: counts move as a finger approaches even if the
+        // touch bit never trips, and the delta from LTA is the clearest signal.
+        touch::Report rp = touch::readReport();
+        // readReport() returns ok=false on an all-0xEE (chip-not-ready) word.
+        bool garbage = !rp.ok;
+        bool resetFlag = !garbage && (rp.status & 0x0080);
+        bool touched = !garbage && !resetFlag && (rp.status & 0x2A00);
+        Serial.printf("[t=%lu] poll RDY=%d ok=%d st=0x%04X touch=%d rst=%d sld=%u "
+                      "CH0=%u(d%+d) CH1=%u(d%+d) CH2=%u(d%+d)\n",
+                      (unsigned long)nowMs, rdy, (int)rp.ok, rp.status,
+                      (int)touched, (int)resetFlag, (unsigned)rp.slider,
+                      (unsigned)rp.ch[0], (int)rp.ch[0] - (int)rp.lta[0],
+                      (unsigned)rp.ch[1], (int)rp.ch[1] - (int)rp.lta[1],
+                      (unsigned)rp.ch[2], (int)rp.ch[2] - (int)rp.lta[2]);
+        if (garbage || resetFlag) {
+          // The full-screen EPD refresh that an advance triggers disrupts the
+          // IQS323 on the shared rail: it comes back flagging SHOW_RESET (or
+          // wedged returning 0xEE), which must NOT be read as a touch (that's the
+          // runaway-advance bug). Re-stream config to bring it back into event
+          // mode, rate-limited so a persistent fault doesn't spin.
+          if (lastRecover == 0 || nowMs - lastRecover >= 3000) {
+            Serial.printf("[t=%lu] touch: reset/garbage (st=0x%04X) -> reconfigure\n",
+                          (unsigned long)nowMs, rp.status);
+            touch::configure();
+            lastRecover = millis();
+            lastRdy = digitalRead(TOUCH_RDY_GPIO);
+          }
+        } else if (touched && count &&
+                   (lastTouchAdv == 0 || nowMs - lastTouchAdv >= 700)) {
+          dashIndex++;
+          renderIndex(dashIndex % count);
+          // The refresh above likely just reset the chip; recover it right away
+          // so the next real tap is seen instead of a garbage-driven loop.
+          touch::configure();
+          lastRdy = digitalRead(TOUCH_RDY_GPIO);
+          Serial.printf("[t=%lu] >>> ADVANCE -> idx=%u (touch reconfigured)\n",
+                        (unsigned long)nowMs, (unsigned)(dashIndex % count));
+          lastTouchAdv = millis();
+          lastBeat = millis();
+        }
+      }
+    }
+#else
     // While plugged in we sit here instead of deep-sleeping, so the ext0 touch
     // wake never fires — poll the bar directly so a tap still advances. RDY is
     // active-LOW and only pulses on a touch event in event mode, so gate the
@@ -107,7 +186,8 @@ void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
         limit = CONSOLE_TIMEOUT_MS;
       }
     }
-#endif
+#endif  // TOUCH_DEBUG
+#endif  // ENABLE_TOUCH
     if (Serial.available()) {
       char c = Serial.read();
       idle = millis();

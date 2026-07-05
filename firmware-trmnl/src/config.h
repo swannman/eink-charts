@@ -100,6 +100,18 @@ constexpr uint64_t REFRESH_INTERVAL_SECONDS = 600;  // Wi-Fi re-fetch floor
 constexpr uint32_t CONSOLE_IDLE_MS = 4000;        // wait for the first command
 constexpr uint32_t CONSOLE_TIMEOUT_MS = 180000;   // idle limit once interacting
 
+// Touch debug streaming. When set, the serial console never times out into deep
+// sleep and continuously streams the touch state: every RDY edge is logged the
+// instant it happens (the interrupt path), and the IQS323 SYSTEM_STATUS is
+// force-read at TOUCH_DEBUG_PERIOD_MS regardless of RDY (readEvent() opens its
+// own comms window). Watching both lines apart tells us whether the sensor even
+// feels the finger vs. whether the RDY interrupt is firing. Set to 0 for any
+// real (battery) deployment — this keeps the S3 awake forever and spams serial.
+#ifndef TOUCH_DEBUG
+#define TOUCH_DEBUG 0
+#endif
+constexpr uint32_t TOUCH_DEBUG_PERIOD_MS = 500;   // forced status poll cadence
+
 // -----------------------------------------------------------------------------
 // Task watchdog. Deep sleep already self-heals most failures (every wake is a
 // fresh boot), but a hang inside the wake path — a WiFi/TLS handshake that never

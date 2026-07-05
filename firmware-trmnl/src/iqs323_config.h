@@ -29,10 +29,16 @@ static const uint8_t S2[] = {  // 0x50-0x59
     0x01, 0x02, 0x7F, 0x0C, 0x90, 0x13, 0xCF, 0x02, 0x0A, 0x03,
     0x00, 0x00, 0x74, 0x17, 0x64, 0x00, 0x44, 0x5C, 0xA2, 0x4B};
 
-// --- Per-channel setups (touch threshold in the 3rd word) -------------------
-static const uint8_t CH0[] = {0x00, 0x00, 0x14, 0x44, 0x1B, 0x00, 0xC8, 0x00};  // 0x60-0x63
-static const uint8_t CH1[] = {0x00, 0x00, 0x14, 0x44, 0x1A, 0x00, 0xC8, 0x00};  // 0x70-0x73
-static const uint8_t CH2[] = {0x00, 0x00, 0x14, 0x44, 0x1A, 0x00, 0xC8, 0x00};  // 0x80-0x83
+// --- Per-channel setups (touch threshold in the 3rd word, at reg 0x_2) -------
+// Touch threshold lowered from the vendor 0x1B/0x1A (~27) to 0x10 (16): waking from
+// sleep is the chip's own touch event (ext0 on RDY), and an off-center / light tap
+// on the bar wasn't dropping any single channel's count past ~27, so it demanded a
+// firm press. Event-mode baseline noise is only a few counts, so 16 is still well
+// clear of false wakes. Lower further (e.g. 0x0C) if it still wants a hard tap;
+// raise if idle false-wakes appear.
+static const uint8_t CH0[] = {0x00, 0x00, 0x14, 0x44, 0x10, 0x00, 0xC8, 0x00};  // 0x60-0x63
+static const uint8_t CH1[] = {0x00, 0x00, 0x14, 0x44, 0x10, 0x00, 0xC8, 0x00};  // 0x70-0x73
+static const uint8_t CH2[] = {0x00, 0x00, 0x14, 0x44, 0x10, 0x00, 0xC8, 0x00};  // 0x80-0x83
 
 // --- Slider (3-channel enable mask 0x07 at word 0x94) -----------------------
 static const uint8_t SLIDER[] = {  // 0x90-0x98
@@ -50,8 +56,16 @@ static const uint8_t FILTER[] = {  // 0xB0-0xB4
 
 // --- System control + report rates (control byte streamed as 0x10; we flip to
 //     event mode after ATI, see touch_iqs323.cpp) ---------------------------
+// Report rates per power mode (ms): 0xC1=Normal, 0xC2=Low-Power, 0xC3=Ultra-LP;
+// 0xC4/0xC5 = NP/LP mode timeouts. The device deep-sleeps ~45s between wakes, so
+// the touch chip sits in ULP scanning only every 100ms (vendor value) — a quick
+// tap falls between samples and is missed, forcing a touch-and-hold. We speed the
+// idle scan up (LP 60->40ms, ULP 100->40ms) so a brief tap lands on a sample. The
+// touch threshold is unchanged (a firm tap deflects 200-600 counts vs a threshold
+// of ~27, so timing — not sensitivity — was the limiter). Cost is a small bump in
+// always-on sensor current, negligible beside the S3 wake/refresh energy.
 static const uint8_t SYSTEM[] = {  // 0xC0-0xC5
-    0x10, 0x00, 0x10, 0x00, 0x3C, 0x00, 0x64, 0x00, 0xB8, 0x0B, 0xD0, 0x07};
+    0x10, 0x00, 0x10, 0x00, 0x28, 0x00, 0x28, 0x00, 0xB8, 0x0B, 0xD0, 0x07};
 
 // --- General: I2C timeout, event timeouts, EVENTS_ENABLE (streamed 0x04; we
 //     override to touch-only 0x02 after ATI) ---------------------------------
