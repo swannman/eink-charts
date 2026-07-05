@@ -137,6 +137,7 @@ async def fetch_panel_data(
     grafana_url: str,
     token: str,
     panel: PanelConfig,
+    target_points: int = 800,
 ) -> dict[str, Any]:
     """Execute all of a panel's queries and shape the result into rendering-ready
     JSON. Series points are normalized to [0,1] on both axes so the device can
@@ -147,7 +148,12 @@ async def fetch_panel_data(
     if end <= start:
         end = start + 1.0
     duration = end - start
-    step = max(15, int(duration / 100))
+    # ~target_points samples across the window, floored at the typical 15s scrape
+    # interval so we don't ask Prometheus for more resolution than the data has.
+    # The X3 uses the default (800, ~one per pixel of its small panel); the TRMNL
+    # X requests more (its 1872px panel + 12MB cache) and the bridge downsamples
+    # per the device's advertised capacity, so this is only an upper bound.
+    step = max(15, int(duration / max(1, target_points)))
 
     raw_series: list[tuple[str, list[tuple[float, float]]]] = []
     global_min = math.inf

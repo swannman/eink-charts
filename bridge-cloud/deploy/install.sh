@@ -68,14 +68,19 @@ sudo -u grafana-push "${UV_ENV[@]}" bash -c "cd /opt/grafana-push && '$UV' pip i
 [ -f /etc/default/grafana-push ] || \
     install -o root -g grafana-push -m 0640 "$SRC/deploy/grafana-push.env.example" /etc/default/grafana-push
 
-# units
-install -m 0644 "$SRC/deploy/grafana-push.service" /etc/systemd/system/grafana-push.service
-install -m 0644 "$SRC/deploy/grafana-push.timer"   /etc/systemd/system/grafana-push.timer
+# units — X3 push + TRMNL X push (both read the same env files)
+install -m 0644 "$SRC/deploy/grafana-push.service"       /etc/systemd/system/grafana-push.service
+install -m 0644 "$SRC/deploy/grafana-push.timer"         /etc/systemd/system/grafana-push.timer
+install -m 0644 "$SRC/deploy/grafana-push-trmnl.service" /etc/systemd/system/grafana-push-trmnl.service
+install -m 0644 "$SRC/deploy/grafana-push-trmnl.timer"   /etc/systemd/system/grafana-push-trmnl.timer
 systemctl daemon-reload
 systemctl enable --now grafana-push.timer
+systemctl enable --now grafana-push-trmnl.timer
 sleep 1
 systemctl --no-pager status grafana-push.timer || true
+systemctl --no-pager status grafana-push-trmnl.timer || true
 
 echo
-echo "set X3_PUBKEY_B64 and WORKER_BEARER_TOKEN in /etc/default/grafana-push, then:"
-echo "    sudo systemctl start grafana-push.service && journalctl -u grafana-push.service -n 30"
+echo "set X3_PUBKEY_B64, TRMNL_PUBKEY_B64, and WORKER_BEARER_TOKEN in /etc/default/grafana-push, then:"
+echo "    sudo systemctl start grafana-push.service       && journalctl -u grafana-push.service -n 30"
+echo "    sudo systemctl start grafana-push-trmnl.service && journalctl -u grafana-push-trmnl.service -n 30"

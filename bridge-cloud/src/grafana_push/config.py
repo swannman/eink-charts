@@ -53,6 +53,13 @@ class PanelConfig:
     grid_y: int = 0
     grid_x: int = 0
     grid_w: int = 24
+    grid_h: int = 1
+    # Absolute threshold steps from fieldConfig.defaults.thresholds.steps as
+    # (value_or_None, color) pairs, and the custom thresholdsStyle.mode
+    # ("area"/"line"/"off"). Used by the TRMNL dashboard bundle to pre-map
+    # Grafana threshold colours to grayscale on the device.
+    threshold_steps: list[tuple[float | None, str]] = field(default_factory=list)
+    thresholds_style: str = ""
 
 
 @dataclass

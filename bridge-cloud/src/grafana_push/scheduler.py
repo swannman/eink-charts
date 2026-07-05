@@ -284,6 +284,14 @@ class Scheduler:
             soft_min = _f(custom.get("axisSoftMin"))
             soft_max = _f(custom.get("axisSoftMax"))
             time_from_override = p.get("timeFrom")
+            # Absolute threshold steps (value may be null on the first step =
+            # -inf) + fill style, for the TRMNL threshold->gray mapping.
+            thr = (fc.get("thresholds") or {})
+            threshold_steps = [
+                (_f(s.get("value")), s.get("color") or "")
+                for s in (thr.get("steps") or [])
+            ]
+            thresholds_style = ((custom.get("thresholdsStyle") or {}).get("mode") or "")
             gp = p.get("gridPos") or {}
             out.append(
                 PanelConfig(
@@ -312,9 +320,32 @@ class Scheduler:
                     grid_y=int(gp.get("y", 0)),
                     grid_x=int(gp.get("x", 0)),
                     grid_w=int(gp.get("w", 24)),
+                    grid_h=int(gp.get("h", 1)),
+                    threshold_steps=threshold_steps,
+                    thresholds_style=thresholds_style,
                 )
             )
         return out
+
+    async def _fetch_dashboard_time(
+        self, client: httpx.AsyncClient, uid: str
+    ) -> tuple[str | None, str | None]:
+        """Return the dashboard's saved time range (from, to), e.g.
+        ('now-7d', 'now'). Either element is None if the dashboard doesn't pin a
+        range, so the caller can fall back to a default. Used by the TRMNL path
+        to honour each dashboard's own window."""
+        try:
+            r = await client.get(
+                f"{self.config.grafana_url}/api/dashboards/uid/{uid}",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=15.0,
+            )
+            r.raise_for_status()
+            t = (r.json().get("dashboard") or {}).get("time") or {}
+        except Exception as e:
+            log.warning("dashboard %s time fetch failed: %s", uid, e)
+            return None, None
+        return (t.get("from") or None), (t.get("to") or None)
 
     @staticmethod
     def _extract_targets(panel_json: dict) -> list[TargetConfig]:

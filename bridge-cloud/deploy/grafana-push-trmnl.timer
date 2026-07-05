@@ -1,0 +1,15 @@
+[Unit]
+Description=Push encrypted TRMNL X dashboard bundle every 5 minutes
+
+[Timer]
+# Offset 30s from the X3 timer so the two pushes don't hammer Grafana at the
+# same instant. The TRMNL bundle refreshes a touch less often than the X3's
+# since it's a whole-folder render.
+OnBootSec=90s
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=grafana-push-trmnl.service
+
+[Install]
+WantedBy=timers.target

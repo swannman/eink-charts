@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 grafana-push = "grafana_push.push:main"
+grafana-push-trmnl = "grafana_push.push_trmnl:main"
 
 [build-system]
 requires = ["hatchling"]

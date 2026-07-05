@@ -1,0 +1,21 @@
+[Unit]
+Description=Push encrypted TRMNL X dashboard bundle to Cloudflare Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=grafana-push
+Group=grafana-push
+# GRAFANA_TOKEN + GRAFANA_BRIDGE_CONFIG come from the legacy env file.
+# WORKER_BEARER_TOKEN + TRMNL_PUBKEY_B64 (+ optional TRMNL_* overrides) come
+# from the push-specific env file, shared with the X3 push service.
+EnvironmentFile=/etc/default/grafana-bridge
+EnvironmentFile=-/etc/default/grafana-push
+WorkingDirectory=/opt/grafana-push
+ExecStart=/opt/grafana-push/.venv/bin/python -m grafana_push.push_trmnl
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
