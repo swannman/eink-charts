@@ -459,8 +459,17 @@ void setup() {
   // only on a real tap rather than every measurement cycle. The IQS323 keeps
   // its config while powered, so later wakes just read it.
 #if ENABLE_TOUCH
-  if (touchPresent && (firstBoot || !rtcTouchReady)) {
-    rtcTouchReady = touch::configure() ? 1 : 0;
+  // Reconfigure on first boot, if we've never marked it ready, OR if the chip is
+  // currently flagging a power-on reset (SHOW_RESET) — a reset wipes its config,
+  // and doing it here (before any other I2C traffic) keeps the IQS323's comms
+  // windows clean, which its streamed config needs to land.
+  if (touchPresent) {
+    touch::Event st = touch::readEvent();
+    if (firstBoot || !rtcTouchReady || st.reset) {
+      Log.printf("touch: configuring (first=%d ready=%d reset=%d)\n",
+                 (int)firstBoot, (int)rtcTouchReady, (int)st.reset);
+      rtcTouchReady = touch::configure() ? 1 : 0;
+    }
   }
 #endif
 

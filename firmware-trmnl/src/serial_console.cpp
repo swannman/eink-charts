@@ -7,6 +7,7 @@
 #include "dashboard_renderer.h"
 #include "display_trmnl.h"  // extern FASTEPD epd
 #include "log.h"
+#include "touch_iqs323.h"
 
 namespace serial_console {
 
@@ -71,13 +72,41 @@ void dump(int scale) {
 }  // namespace
 
 void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
-  Serial.printf("\n== console: d/D=dump n=next p=prev r=redraw s=sleep (idx=%u/%u) ==\n",
+  Serial.printf("\n== console: d/D=dump n=next p=prev r=redraw T=touch-reset s=sleep (idx=%u/%u) ==\n",
                 (unsigned)(count ? dashIndex % count : 0), (unsigned)count);
   uint32_t idle = millis();
   uint32_t limit = CONSOLE_IDLE_MS;  // short until the host first responds
+  uint32_t lastTouchAdv = 0;         // debounce: one advance per press window
   while (millis() - idle < limit) {
 #if ENABLE_WATCHDOG
     esp_task_wdt_reset();  // the dev console can idle far longer than the WDT
+#endif
+#if ENABLE_TOUCH
+    // While plugged in we sit here instead of deep-sleeping, so the ext0 touch
+    // wake never fires — poll the bar directly so a tap still advances. RDY is
+    // active-LOW and only pulses on a touch event in event mode, so gate the
+    // (windowed) I2C read on it to stay non-blocking when nothing is touched.
+    if (digitalRead(TOUCH_RDY_GPIO) == LOW) {
+      touch::Event ev = touch::readEvent();
+      if (ev.ok && ev.reset) {
+        // The chip is flagging a power-on reset (SHOW_RESET): its channel bits
+        // are garbage (they read as always-touched) until reconfigured. Don't
+        // reconfigure from here — poking the IQS323 mid-console desyncs its comms
+        // windows and the config won't land; recovery happens cleanly at the next
+        // boot (see main.cpp). Just ignore it so we don't false-advance in a loop.
+      } else if (ev.ok && ev.touched && count &&
+                 (lastTouchAdv == 0 || millis() - lastTouchAdv >= 700)) {
+        // Debounce (not edge-detect): a held finger keeps reporting touched and
+        // the chip may not emit a release event, so advance at most once per
+        // window rather than relying on seeing not-touched to re-arm.
+        dashIndex++;
+        renderIndex(dashIndex % count);
+        Serial.printf("touch -> idx=%u\n", (unsigned)(dashIndex % count));
+        lastTouchAdv = millis();
+        idle = millis();                 // treat a tap as activity
+        limit = CONSOLE_TIMEOUT_MS;
+      }
+    }
 #endif
     if (Serial.available()) {
       char c = Serial.read();
@@ -102,6 +131,17 @@ void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
           Serial.println("redrawn");
           break;
         case 's': Serial.println("sleeping"); return;
+#if ENABLE_TOUCH
+        case 'T': {
+          // Recover a wedged touch chip: configure() now self-resets (SW reset ->
+          // wait for clean state -> stream config -> ATI -> event mode).
+          bool cfg = touch::configure();
+          touch::Event ev = touch::readEvent();
+          Serial.printf("touch: configure=%d status=0x%04X touched=%d reset=%d\n",
+                        (int)cfg, ev.raw, (int)ev.touched, (int)ev.reset);
+          break;
+        }
+#endif
         default: break;
       }
     }

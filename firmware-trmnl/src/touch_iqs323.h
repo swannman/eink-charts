@@ -40,4 +40,9 @@ bool configure();
 // Call once per wake to decide whether to advance and to clear the RDY line.
 Event readEvent();
 
+// Software-reset the chip (reload defaults, come back streaming). Recovery for a
+// chip wedged in a bad state when its power can't be cycled. Follow with
+// configure() to re-stream config and return to event mode.
+bool swReset();
+
 }  // namespace touch

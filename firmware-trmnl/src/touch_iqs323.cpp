@@ -26,6 +26,7 @@ constexpr uint8_t ST1_TOUCH_MASK = 0x2A;
 
 // SYSTEM_CONTROL byte0 control bits.
 constexpr uint8_t CTRL_ACK_RESET = 0x01;   // bit0
+constexpr uint8_t CTRL_SW_RESET = 0x02;    // bit1: software reset (reload defaults)
 constexpr uint8_t CTRL_RE_ATI = 0x04;      // bit2
 constexpr uint8_t CTRL_RESEED = 0x08;      // bit3
 constexpr uint8_t CTRL_EVENT_MODE = 0x80;  // bit7
@@ -36,20 +37,30 @@ constexpr uint8_t EVT_TOUCH_ONLY = 0x02;
 constexpr uint8_t EVT_ACTIVATION_THRESHOLD = 0x18;
 
 // The RDY line is level, active-LOW, and held until a comms window closes on a
-// STOP. We never force-comms: during config the chip streams (RDY pulses low
-// every cycle) and on a touch wake the event has already pulled RDY low and the
-// widened I2C window (see iqs323_config.h) holds it there through boot — so we
-// just wait for the natural window to be open.
-bool waitReadyLow(uint32_t timeout_ms) {
-  uint32_t start = millis();
-  while (digitalRead(TOUCH_RDY_GPIO) != LOW) {
-    if (millis() - start > timeout_ms) return false;
+// STOP. In event mode the chip idles RDY HIGH until a touch, so we can't just
+// wait for a window — we FORCE one (the official Azoteq method): write 0xFF with
+// a STOP, which prompts the IQS323 to open a comms window, then wait for RDY to
+// drop. Without this, a chip idling in event mode (or wedged not asserting on
+// touch) is completely unreachable — we can't read status, reconfigure, or reset
+// it. If RDY is already low we're inside a window already and skip the poke.
+void forceComm() {
+  // Always request a fresh random-access window: after a reset the chip is
+  // streaming (RDY pulses low), and a streaming window expects a READ — writing
+  // config into it gets dropped. Poking 0xFF+STOP makes the chip open a clean
+  // window addressed for our next transaction, regardless of current RDY state.
+  Wire.beginTransmission(IQS323_ADDR);
+  Wire.write(0xFF);              // request a communication window
+  Wire.endTransmission(true);    // STOP prompts the chip to open it
+  for (int i = 0; i < 100; i++) {
+    if (digitalRead(TOUCH_RDY_GPIO) == LOW) break;
     delay(1);
   }
-  return true;
 }
 
-bool openWindow() { return waitReadyLow(300); }
+bool openWindow() {
+  forceComm();
+  return digitalRead(TOUCH_RDY_GPIO) == LOW;
+}
 
 // Read `len` bytes from `reg`. Uses a repeated-START between the address write
 // and the read so the window stays open, then a STOP that releases RDY.
@@ -87,6 +98,22 @@ bool present() {
   return Wire.endTransmission() == 0;
 }
 
+// Software-reset the chip (SYSTEM_CONTROL bit1). It reloads defaults and comes
+// back up STREAMING — the clean state configure() expects. Use this to recover a
+// chip wedged in a bad state (e.g. stuck SHOW_RESET, or not asserting on touch)
+// when its power can't be cycled (it sits on the always-on sensor rail).
+bool swReset() {
+  Wire.setTimeOut(300);
+  // openWindow() forces a comms window, so this reaches the chip even when it's
+  // idle in event mode. Read-modify-write SYSTEM_CONTROL to set the SW_RESET bit.
+  uint8_t c[2] = {0, 0};
+  if (!readReg(MM_SYSTEM_CONTROL, c, 2)) return false;
+  c[0] |= CTRL_SW_RESET;
+  bool ok = writeReg(MM_SYSTEM_CONTROL, c, 2);
+  delay(200);  // chip reboots into streaming mode before we reconfigure
+  return ok;
+}
+
 // Poll SYSTEM_STATUS until ATI settles. Returns true on convergence.
 bool waitAti(uint32_t timeout_ms) {
   uint32_t start = millis();
@@ -105,19 +132,34 @@ bool configure() {
   pinMode(TOUCH_RDY_GPIO, INPUT);
   Wire.setTimeOut(300);  // tolerate the IQS323's clock stretching
 
-  // The IQS323 sits on the always-on sensor rail, so it keeps its config across
-  // the S3's resets (including a firmware reflash, which clears our RTC flag).
-  // An un-configured chip STREAMS — RDY pulses low every measurement cycle; a
-  // configured chip is in event mode and idles RDY high until a touch. So if we
-  // don't see a streaming window, the chip is already set up: nothing to do
-  // (and we couldn't open a comms window to re-stream anyway without a touch).
-  if (!waitReadyLow(500)) {
-    Log.println("touch: already configured (event mode, RDY idle)");
-    return true;
+  // Mirror the official IQS323 init: only (re)stream settings when the chip is
+  // freshly reset (SHOW_RESET set) AND responsive. Streaming into a running/idle
+  // chip drops writes. If it isn't already showing a reset, software-reset it and
+  // wait for it to come back up flagging SHOW_RESET before we stream.
+  uint8_t s[2] = {0, 0};
+  bool freshReset = readReg(MM_SYSTEM_STATUS, s, 2) && (s[0] & ST0_SHOW_RESET);
+  if (!freshReset) {
+    Log.println("touch: not showing reset — issuing SW reset");
+    swReset();  // sets SW_RESET bit, waits ~200ms for the chip to reboot
+  }
+  // Poll until the chip is responsive and flags SHOW_RESET (clean, ready state).
+  uint32_t rstart = millis();
+  while (!(readReg(MM_SYSTEM_STATUS, s, 2) && (s[0] & ST0_SHOW_RESET))) {
+    if (millis() - rstart > 1000) {
+      Log.println("touch: chip never flagged SHOW_RESET after reset — continuing");
+      break;
+    }
+    delay(10);
   }
 
+  // Give the chip a moment to settle after the reset before streaming settings
+  // (writes during the initial power-on ATI can be dropped). We don't hard-wait
+  // for ATI to clear — with default config it may not converge on this PCB — a
+  // brief settle is enough now that every write forces a fresh comms window.
+  delay(200);
+
   // 1. Stream the full config block (electrode routing, thresholds, slider,
-  //    report rates). Control byte is written as 0x10 here — still streaming.
+  //    report rates), each block written in its own forced-comms window.
   for (int i = 0; i < iqs323_cfg::STREAM_COUNT; i++) {
     const auto& c = iqs323_cfg::STREAM[i];
     if (!writeReg(c.reg, c.data, c.len)) {
@@ -126,13 +168,11 @@ bool configure() {
     }
   }
 
-  // Verify the block landed (CH0 touch threshold should read back 0x1B). A bad
-  // read here means the windowed comms aren't working — bail early with a clear
-  // signal rather than chasing a phantom ATI error.
-  uint8_t chk[2] = {0, 0};
-  if (!readReg(MM_CH0_TOUCH, chk, 2) || chk[0] != 0x1B) {
-    Log.printf("touch: config readback bad (0x62=0x%02X, want 0x1B)\n", chk[0]);
-    return false;
+  // Sanity: CH0 touch threshold (0x62 byte0) should read back 0x1B. Non-fatal —
+  // ATI convergence below is the real success signal — but log a mismatch.
+  uint8_t rb[2] = {0};
+  if (readReg(MM_CH0_TOUCH, rb, 2) && rb[0] != 0x1B) {
+    Log.printf("touch: config readback 0x62=0x%02X (want 0x1B)\n", rb[0]);
   }
 
   // 2. Acknowledge the power-on reset (clears SHOW_RESET so it stops re-flagging).
@@ -154,18 +194,27 @@ bool configure() {
   }
   if (!atiOk) return false;
 
-  // 4. Enable touch events only (RDY will assert on a touch, not every cycle).
-  uint8_t ev[2] = {EVT_TOUCH_ONLY, EVT_ACTIVATION_THRESHOLD};
-  if (!writeReg(MM_EVENT_ENABLE, ev, 2)) {
-    Log.println("touch: event-enable write failed");
-    return false;
-  }
+  // 4. Event enable is left as streamed by the config block (0xD3 = 0x04, the
+  //    official value that makes RDY assert on touch/slider events). We used to
+  //    override it to 0x02 here, which enabled the wrong event bit and meant a
+  //    touch never pulsed RDY — so we no longer touch it.
 
-  // 5. Switch to event mode (SYSTEM_CONTROL b0 |= EVENT_MODE). After this RDY
-  //    only pulses on a real touch event.
+  // 5. READ_DATA: the official init reads the full 18-byte report (0x10-0x18)
+  //    once before enabling event mode — this drains the pending measurement and
+  //    lets the chip settle into normal operation. We skipped it before.
+  uint8_t report[18] = {0};
+  readReg(MM_SYSTEM_STATUS, report, 18);
+
+  // 6. Switch to event mode (SYSTEM_CONTROL b0 |= EVENT_MODE), then verify the
+  //    bit actually read back set (the official warns if it didn't).
   if (!ctrlSetBits(CTRL_EVENT_MODE)) {
     Log.println("touch: event-mode write failed");
     return false;
+  }
+  delay(10);
+  uint8_t ctrl[2] = {0, 0};
+  if (readReg(MM_SYSTEM_CONTROL, ctrl, 2) && !(ctrl[0] & CTRL_EVENT_MODE)) {
+    Log.printf("touch: WARNING event-mode bit not set (ctrl0=0x%02X)\n", ctrl[0]);
   }
 
   Log.println("touch: configured (event mode, touch events)");
