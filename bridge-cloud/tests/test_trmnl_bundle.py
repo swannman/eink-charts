@@ -70,6 +70,21 @@ def test_bands_from_steps_cold_chain() -> None:
     assert bands[0][1] < bands[1][0]
 
 
+def test_bands_from_steps_base_below_axis_min() -> None:
+    # Garage-freezer config: red base (stored as value 0, not null), green 0-10,
+    # red 10+, on an axis that reaches below 0. The base red must fill from
+    # axis_min up to 0 (the below-0 band), not be dropped because its stored
+    # value equals the next step's.
+    steps = [(0.0, "rgba(255,0,0,0.1)"), (0.0, "rgba(0,200,0,0.1)"), (10.0, "rgba(255,0,0,0.1)")]
+    bands = bands_from_steps(steps, -5.0, 15.0)
+    assert len(bands) == 2                              # bottom red + top red
+    assert bands[0][0] == 0.0                           # bottom band starts at axis min (-5)
+    assert abs(bands[0][1] - 0.25) < 1e-4               # up to value 0
+    assert abs(bands[1][0] - 0.75) < 1e-4               # top band from value 10
+    assert abs(bands[-1][1] - 1.0) < 1e-4
+    assert all(g == BAND_GRAY_ALERT for _, _, g in bands)
+
+
 def test_bands_from_steps_rgba_and_unsorted() -> None:
     # Real Grafana data: rgba colours, and steps stored out of value order.
     steps = [(0.0, "rgba(255,0,0,0.1)"), (-8.0, "rgba(0,200,0,0.1)"), (4.0, "rgba(255,0,0,0.1)")]

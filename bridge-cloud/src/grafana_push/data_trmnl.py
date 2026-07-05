@@ -196,11 +196,19 @@ def bands_from_steps(
     if not steps or axis_max <= axis_min:
         return []
     rng = axis_max - axis_min
-    # Lower edges: null (first step) clamps to axis_min.
+    # Lower edges. Grafana's LOWEST step is the base (covers from -inf), even
+    # when its stored value isn't null — so anchor the first sorted step at
+    # axis_min regardless of its value. (Anchoring it at its own value instead
+    # drops the below-value band whenever that value sits above axis_min, e.g. a
+    # freezer with a red base at 0 and an axis reaching below 0.) Later steps
+    # anchor at their threshold value, clamped to the axis.
     edges: list[tuple[float, str]] = []
-    for thr, color in _sorted_steps(steps):
-        v = axis_min if thr is None else thr
-        edges.append((max(axis_min, min(axis_max, v)), color))
+    for i, (thr, color) in enumerate(_sorted_steps(steps)):
+        if i == 0 or thr is None:
+            v = axis_min
+        else:
+            v = max(axis_min, min(axis_max, thr))
+        edges.append((v, color))
     bands: list[tuple[float, float, int]] = []
     for i, (lo, color) in enumerate(edges):
         hi = edges[i + 1][0] if i + 1 < len(edges) else axis_max
