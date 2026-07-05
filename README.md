@@ -59,12 +59,30 @@ The bundle stays end-to-end encrypted throughout — Cloudflare and the
 iOS app both see only ciphertext. Only the X3 (which holds the private
 key it generated on first boot) can decrypt.
 
+## A second display: the TRMNL X
+
+The same push pipeline also drives a **TRMNL X** (10.3" 1872×1404 parallel
+e-paper, ESP32-S3, genuine 16-level grayscale via FastEPD) as a sibling device.
+Instead of one panel per screen, it cycles through the **dashboards** in a
+Grafana folder, rendering each dashboard's whole panel grid (from every panel's
+`gridPos`) natively in grayscale — Grafana threshold colours are pre-mapped to
+gray shades so status reads at a glance. It reuses the bridge, the sealed-bundle
+crypto, and the Worker (a separate `/bundle-trmnl` object); only the payload
+format and the on-device renderer differ. See
+[`firmware-trmnl/`](firmware-trmnl/README.md) and the `push_trmnl` service in
+[`bridge-cloud/`](bridge-cloud/README.md). The X3 and TRMNL X run side by side,
+each with its own device key.
+
 ## Subdirectories
 
 - **[`firmware-cloud/`](firmware-cloud/README.md)** — ESP32-C3 firmware for
   the X3. Multi-WiFi credentials with per-network refresh floors, first-boot
   QR-code key enrollment, X25519+AES-256-GCM decrypt, BLE peripheral
   fallback when WiFi is unreachable.
+- **[`firmware-trmnl/`](firmware-trmnl/README.md)** — ESP32-S3 firmware for the
+  TRMNL X. FastEPD 4-bit grayscale, whole-dashboard grid rendering scaled to
+  fill the screen, threshold-to-gray status shading, auto-rotating slideshow
+  with touch-to-advance. Wi-Fi only; same X25519+AES-256-GCM decrypt as the X3.
 - **[`bridge-cloud/`](bridge-cloud/README.md)** — push-only service that
   runs on a Raspberry Pi. Queries Grafana, builds the binary bundle, seals
   it for the X3, uploads to the Cloudflare Worker every 4 minutes via a
