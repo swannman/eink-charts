@@ -37,7 +37,12 @@ RTC_DATA_ATTR static uint8_t rtcLastCfgOk = 0xFF;   // configure() return (ATI e
 RTC_DATA_ATTR static uint8_t rtcLastArmed = 0xFF;   // RDY idled HIGH → ext0 armed
 RTC_DATA_ATTR static uint8_t rtcLastCfgTries = 0;   // how many configure() attempts
 RTC_DATA_ATTR static uint8_t rtcLastFast = 0xFF;    // 1=fast re-arm, 0=full reconfigure
+RTC_DATA_ATTR static uint8_t rtcBatCells = 0xFF;    // detected cell count (battery::Cells)
 constexpr uint32_t RTC_MAGIC_VALUE = 0x54524d4eu;  // 'TRMN'
+
+// Latest battery snapshot, taken once per wake after the gauge is up; shared by
+// the on-screen indicator and the Wi-Fi telemetry post.
+static battery::Status gBattery = {};
 
 // Wi-Fi re-fetch cadence expressed in wake cycles (no NTP needed): fetch a
 // fresh bundle roughly every REFRESH_INTERVAL, advancing the slideshow from
@@ -194,8 +199,9 @@ static size_t reportCapacityBytes() {
 }
 
 // ---- Battery telemetry (best-effort) ----------------------------------------
-static void postBattery(const String& url, const String& bearer, uint16_t mv) {
-  if (!url.length() || !bearer.length() || mv == 0) return;
+static void postBattery(const String& url, const String& bearer,
+                        const battery::Status& b) {
+  if (!url.length() || !bearer.length() || b.mv == 0) return;
   String batUrl = url;
   int slash = batUrl.lastIndexOf('/');
   if (slash >= 0) batUrl = batUrl.substring(0, slash) + "/battery-trmnl";
@@ -206,8 +212,13 @@ static void postBattery(const String& url, const String& bearer, uint16_t mv) {
   if (!http.begin(secure, batUrl)) return;
   http.addHeader("Authorization", "Bearer " + bearer);
   http.addHeader("Content-Type", "application/json");
-  char body[32];
-  snprintf(body, sizeof(body), "{\"mv\":%u}", (unsigned)mv);
+  // mv stays first + unconditional for backward compatibility; soc is -1 when
+  // the gauge hasn't settled (voltage is still valid).
+  char body[96];
+  snprintf(body, sizeof(body),
+           "{\"mv\":%u,\"soc\":%d,\"charging\":%s,\"cells\":%u}", (unsigned)b.mv,
+           b.soc == 0xFF ? -1 : (int)b.soc, b.charging ? "true" : "false",
+           (unsigned)b.cells);
   int code = http.PUT((uint8_t*)body, strlen(body));
   Log.printf("battery: PUT -> %d\n", code);
   http.end();
@@ -388,7 +399,7 @@ static bool prefetchAll(const uint8_t sk[32], const uint8_t pk[32], uint8_t* cou
   }
 
   // Best-effort battery telemetry while Wi-Fi is still up.
-  postBattery(url, bearer, battery::voltageMv());
+  postBattery(url, bearer, gBattery);
   WiFi.disconnect(true, true);
   return ok;
 }
@@ -400,6 +411,69 @@ static void drawWaitingScreen() {
                             "Waiting for the first dashboard bundle...", GRAY_BLACK);
 }
 
+// A small lightning bolt (two stacked slanted spans) to mark "charging".
+static void drawBolt(int cx, int top, int h, uint8_t color) {
+  int seg = h / 2;
+  int w = h / 4;
+  if (w < 3) w = 3;
+  for (int i = 0; i < seg; i++)  // top-right → center
+    epd.fillRect(cx + w - (w * i) / seg, top + i, w, 1, color);
+  for (int i = 0; i < seg; i++)  // center → bottom-left
+    epd.fillRect(cx - (w * i) / seg, top + seg + i, w, 1, color);
+}
+
+// Draw the battery indicator in the top-right corner, over a white pad so it
+// stays legible on top of panel content. Shows a battery glyph filled to SOC
+// with the percentage beside it (or the voltage if the gauge hasn't settled),
+// plus a bolt when charging. Rendered in the same light gray as the y-axis tick
+// labels (dashboard_renderer's YAXIS_GRAY) so it frames rather than competes.
+// Call after render(), before present().
+static void drawBatteryBadge(const battery::Status& b) {
+  if (!b.present) return;
+  const uint8_t GRAY = 6;  // == dashboard_renderer::YAXIS_GRAY
+  const int margin = 14, bodyW = 78, bodyH = 34, nubW = 6, nubH = 16, outline = 3;
+  const int bodyRight = SCREEN_W - margin - nubW;
+  const int bodyLeft = bodyRight - bodyW;
+  const int top = margin;
+
+  char label[16];
+  if (b.soc != 0xFF)
+    snprintf(label, sizeof(label), "%u%%", (unsigned)b.soc);
+  else
+    snprintf(label, sizeof(label), "%u.%02uV", b.mv / 1000, (b.mv % 1000) / 10);
+
+  const int labelPx = 30;
+  int labelW = gfx4::textWidth(label, labelPx);
+  int boltW = b.charging ? bodyH / 3 + 6 : 0;
+  int padLeft = bodyLeft - 12 - labelW - boltW - 10;
+  if (padLeft < 0) padLeft = 0;
+  epd.fillRect(padLeft, top - 6, SCREEN_W - padLeft, bodyH + 12, 15);  // white pad
+
+  // Battery body outline (multi-pass for thickness) + terminal nub. The shape
+  // primitives honor `color` directly (unlike the AA font), so gray goes on now.
+  for (int i = 0; i < outline; i++)
+    epd.drawRoundRect(bodyLeft + i, top + i, bodyW - 2 * i, bodyH - 2 * i, 5, GRAY);
+  epd.fillRect(bodyRight + 1, top + (bodyH - nubH) / 2, nubW, nubH, GRAY);
+
+  // Fill proportional to SOC (same gray — the empty white shows the level).
+  if (b.soc != 0xFF) {
+    int pad = outline + 3;
+    int innerW = bodyW - 2 * pad;
+    int fillW = (int)((long)innerW * b.soc / 100);
+    if (fillW > 0)
+      epd.fillRect(bodyLeft + pad, top + pad, fillW, bodyH - 2 * pad, GRAY);
+  }
+
+  // Percentage/voltage label to the left of the glyph. FastEPD's AA renderer
+  // always draws black, so draw it black then lighten the text box to GRAY —
+  // exactly how the y-axis labels get their shade.
+  int textRight = bodyLeft - 12;
+  gfx4::drawTextRightFit(textRight, top + 3, labelW + 8, labelPx, label, GRAY_BLACK);
+  gfx4::lightenToGray(textRight - labelW - 2, top, textRight + 2, top + labelPx + 6, GRAY);
+  if (b.charging)
+    drawBolt(textRight - labelW - 10, top + 3, bodyH - 6, GRAY);
+}
+
 // Load dashboard `index`'s cached bundle and paint it. Each cached file holds a
 // single dashboard, so we always render its block 0. Returns false if the file
 // is missing/corrupt. Signature matches serial_console's render callback.
@@ -409,6 +483,7 @@ static bool renderIndexFromCache(uint32_t index) {
   bool ok = len && bundle::valid(blob, len);
   if (ok) {
     dashboard_renderer::render(blob, len, 0);
+    drawBatteryBadge(gBattery);
     display_trmnl::present();
   }
   if (blob) free(blob);
@@ -584,6 +659,14 @@ void setup() {
     esp_deep_sleep_start();
   }
   wdtFeed();  // panel init + first full refresh done
+
+  // Fuel gauge: the display init above brought up the TCA9535, which the cell
+  // detection + charge-status reads need. Cheap on a normal wake (only reloads
+  // the golden file when the gauge actually reset). Snapshot it once for the
+  // on-screen indicator and the telemetry post.
+  battery::begin(&rtcBatCells);
+  gBattery = battery::read();
+  wdtFeed();  // cell detection / ITPOR settle can take up to a few seconds
 
   // X25519 key: first boot generates + shows the enrollment QR, then sleeps.
   uint8_t sk[32], pk[32];

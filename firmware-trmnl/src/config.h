@@ -22,10 +22,15 @@ constexpr int8_t SENSOR_SCL_PIN = 40;
 constexpr uint8_t IQS323_ADDR = 0x44;
 constexpr int8_t  TOUCH_RDY_GPIO = 3;   // == official PIN_INTERRUPT
 
-// TI BQ27427 fuel gauge (fixed I2C address).
-constexpr uint8_t BQ27427_ADDR = 0x55;
-constexpr uint8_t BQ_REG_VOLTAGE = 0x04;  // mV, LE u16
-constexpr uint8_t BQ_REG_SOC     = 0x1C;  // %, LE u16
+// TI BQ27427 fuel gauge (fixed I2C @0x55). The register command set + golden
+// files live in the vendored MIT lib/BQ27427; battery_bq27427.cpp adds cell
+// detection + charge status via the TCA9535/charger I/O below (FastEPD io pins).
+constexpr uint8_t  BAT_DET_IO_PIN     = 7;      // TCA9535 P0_7: RC-discharge cell sense
+constexpr uint8_t  BQ25616_STAT_IO    = 24;     // charger STAT (LOW = charging)
+constexpr uint32_t BAT_DET_CHARGE_MS  = 2;      // drive the sense pin HIGH to charge RC
+constexpr uint32_t BAT_DET_TIMEOUT_US = 6000;   // still HIGH after this → no battery
+constexpr uint32_t BAT_DET_THRESH_US  = 750;    // discharge >thr → 1 cell, ≤thr → 2 cells
+constexpr uint32_t BAT_ITPOR_WAIT_MS  = 5000;   // poll for IT algorithm to leave INIT
 
 // -----------------------------------------------------------------------------
 // Display geometry (native landscape). Mirrors tools/preview_trmnl.py.

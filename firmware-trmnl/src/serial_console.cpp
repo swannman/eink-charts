@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 
+#include <limits.h>
+
+#include "BQ27427.h"  // lipo — for the capacity/current detail in the 'b' command
+#include "battery_bq27427.h"
 #include "config.h"
 #include "dashboard_renderer.h"
 #include "display_trmnl.h"  // extern FASTEPD epd
@@ -72,7 +76,7 @@ void dump(int scale) {
 }  // namespace
 
 void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
-  Serial.printf("\n== console: d/D=dump n=next p=prev r=redraw T=touch-reset s=sleep (idx=%u/%u) ==\n",
+  Serial.printf("\n== console: d/D=dump n=next p=prev r=redraw b=battery T=touch-reset s=sleep (idx=%u/%u) ==\n",
                 (unsigned)(count ? dashIndex % count : 0), (unsigned)count);
   uint32_t idle = millis();
   uint32_t limit = CONSOLE_IDLE_MS;  // short until the host first responds
@@ -211,6 +215,27 @@ void run(uint8_t count, uint32_t& dashIndex, RenderIndexFn renderIndex) {
           Serial.println("redrawn");
           break;
         case 's': Serial.println("sleeping"); return;
+        case 'b': {
+          battery::Status s = battery::read();
+          Serial.printf("battery: present=%d ready=%d cells=%d\n", (int)s.present,
+                        (int)s.ready, (int)s.cells);
+          Serial.printf("  v=%u mV  soc=%d%%  charging=%s\n", (unsigned)s.mv,
+                        s.soc == 0xFF ? -1 : (int)s.soc, s.charging ? "yes" : "no");
+          if (s.tempCx10 != INT16_MIN)
+            Serial.printf("  temp=%d.%d C\n", s.tempCx10 / 10, abs(s.tempCx10) % 10);
+          Serial.printf("  flags=0x%04X (ITPOR=%d FC=%d CHG=%d DSG=%d)\n", s.flags,
+                        (s.flags >> 5) & 1, (s.flags >> 9) & 1, (s.flags >> 8) & 1,
+                        s.flags & 1);
+          if (s.ready) {
+            uint8_t scale = lipo.designEnergyScale();
+            Serial.printf("  capacity: remain=%u full=%u mAh  current=%d mA\n",
+                          (unsigned)(lipo.capacity(REMAIN) * scale),
+                          (unsigned)(lipo.capacity(FULL) * scale), lipo.current(AVG));
+          } else {
+            Serial.println("  (gauge not settled — SOC/capacity not yet trustworthy)");
+          }
+          break;
+        }
 #if ENABLE_TOUCH
         case 'T': {
           // Recover a wedged touch chip: configure() now self-resets (SW reset ->

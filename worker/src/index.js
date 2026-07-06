@@ -21,6 +21,8 @@ const BATTERY_RETENTION_SECONDS = 7 * 24 * 3600;  // 7 days, matches the 7d zoom
 // slideshow from cache, so each dashboard gets the device's full capacity.
 const BUNDLE_TRMNL_KEY = "bundle_trmnl";       // + "_<index>"
 const MANIFEST_TRMNL_KEY = "manifest_trmnl";   // {count, etags} the device reads first
+// TRMNL entries carry the BQ27427 fuel-gauge fields too (soc/charging/cells),
+// not just voltage like the X3's BQ27220.
 const BATTERY_TRMNL_KEY = "battery_history_trmnl";
 
 // Last cache capacity the TRMNL X advertised (via the X-Bundle-Capacity header
@@ -123,18 +125,25 @@ async function handleCapacity(request, env, key) {
 
 async function handleBattery(request, env, key) {
   if (request.method === "PUT") {
-    // Body: {"mv": <int>}. Anything else is rejected so junk doesn't poison
-    // the history.
+    // Body: {"mv": <int>, "soc"?: <int -1..100>, "charging"?: <bool>,
+    // "cells"?: <int 0..2>}. mv is required; the rest are optional TRMNL X fuel-
+    // gauge fields (the X3 sends mv only). Upper bound spans a 2-cell pack.
     let body;
     try { body = await request.json(); } catch { body = null; }
     const mv = body?.mv;
-    if (typeof mv !== "number" || mv < 2500 || mv > 5000) {
-      return new Response("invalid mv (expected number 2500-5000)", { status: 400 });
+    if (typeof mv !== "number" || mv < 2500 || mv > 9000) {
+      return new Response("invalid mv (expected number 2500-9000)", { status: 400 });
     }
 
     let history = await loadBatteryHistory(env, key);
     const now = Math.floor(Date.now() / 1000);
-    history.push({ ts: now, mv: Math.round(mv) });
+    const entry = { ts: now, mv: Math.round(mv) };
+    if (typeof body.soc === "number" && body.soc >= 0 && body.soc <= 100)
+      entry.soc = Math.round(body.soc);
+    if (typeof body.charging === "boolean") entry.charging = body.charging;
+    if (typeof body.cells === "number" && body.cells >= 0 && body.cells <= 2)
+      entry.cells = body.cells;
+    history.push(entry);
 
     // Prune to retention window. Single writer per device at low frequency,
     // so read-modify-write is safe enough.
