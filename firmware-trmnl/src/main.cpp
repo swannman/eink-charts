@@ -36,6 +36,7 @@ RTC_DATA_ATTR static uint8_t rtcDashCount = 0;   // cached dashboards (slideshow
 RTC_DATA_ATTR static uint8_t rtcLastCfgOk = 0xFF;   // configure() return (ATI etc.)
 RTC_DATA_ATTR static uint8_t rtcLastArmed = 0xFF;   // RDY idled HIGH → ext0 armed
 RTC_DATA_ATTR static uint8_t rtcLastCfgTries = 0;   // how many configure() attempts
+RTC_DATA_ATTR static uint8_t rtcLastFast = 0xFF;    // 1=fast re-arm, 0=full reconfigure
 constexpr uint32_t RTC_MAGIC_VALUE = 0x54524d4eu;  // 'TRMN'
 
 // Wi-Fi re-fetch cadence expressed in wake cycles (no NTP needed): fetch a
@@ -434,33 +435,36 @@ static void goToSleep() {
   display_trmnl::sleep();
 
 #if ENABLE_TOUCH
-  delay(150);  // let the sensor rail settle after EPD power-down before ATI
-  // Re-arm event mode and CONFIRM RDY idles HIGH before trusting ext0: a chip
-  // left STREAMING (RDY pulsing every ~60ms) would assert ext0 immediately and
-  // spin-wake us forever, draining the battery. If it won't hold event mode after
-  // a few tries, fall back to timer-only wake for this cycle rather than risk a
-  // wake loop — touch just won't wake us until the next clean cycle.
-  // Always re-stream config + ATI + event mode here. We must NOT trust a single
-  // rdyIdleHigh() sample to skip this: after a refresh the chip streams (RDY
-  // flapping), and a momentary HIGH read would wrongly skip the reconfigure and
-  // arm ext0 on a chip that never fires on touch — killing touch-wake entirely.
+  delay(150);  // let the sensor rail settle after EPD power-down
+  // A display refresh leaves the chip in clean event mode with config INTACT
+  // (SHOW_RESET clear, 0x62 threshold unchanged). So the normal path is the FAST path:
+  // just confirm the chip is healthy (config intact + RDY idling HIGH = event mode)
+  // and arm ext0 — no reset, no ATI. This keeps the tap cadence tight and, crucially,
+  // avoids the post-refresh ATI that used to fail on the just-powered rail and left
+  // touch dead. Only when the chip is genuinely reset/wedged/streaming (eventModeReady
+  // false) do we pay for a full hwReset + reconfigure. eventModeReady()'s multi-sample
+  // RDY-HIGH check replaces the old single-sample worry about arming on a streamer.
   bool touchArmed = false;
-  bool cfgOk = false;
+  bool cfgOk = true;   // config assumed good on the fast path (we didn't touch it)
   uint8_t tries = 0;
-  for (int i = 0; i < 3 && !touchArmed; i++) {
-    tries++;
-    // Hardware-reset to a known-clean state BEFORE configuring. The 4bpp full
-    // refresh reliably leaves the IQS323 wedged (RDY stuck LOW, config writes NAK,
-    // e.g. "config write @0x30 failed") — a software reset can't reach a wedged
-    // chip, so configure() alone fails every retry and ext0 never arms. Pulsing
-    // master-clear (RDY/GPIO3) reboots it into streaming with SHOW_RESET set,
-    // exactly the clean state configure() expects.
-    touch::hwReset();
-    cfgOk = touch::configure();          // re-stream config, ATI, event mode
-    touchArmed = cfgOk && touch::rdyIdleHigh();  // configure() already waited a cycle
-    if (!touchArmed)
-      Log.printf("touch: re-arm %d — cfg=%d RDY=%d\n", i, (int)cfgOk,
-                 digitalRead(TOUCH_RDY_GPIO));
+  if (touch::eventModeReady()) {
+    touchArmed = true;
+    rtcLastFast = 1;
+    Log.println("touch: fast re-arm — event mode intact, no reconfigure");
+  } else {
+    rtcLastFast = 0;
+    // Chip actually reset/wedged/streaming. Hardware-reset (reaches a wedged chip a
+    // software reset can't) then re-stream config + ATI + event mode; verify RDY idles
+    // HIGH before trusting ext0 so we never spin-wake on a streaming chip.
+    for (int i = 0; i < 3 && !touchArmed; i++) {
+      tries++;
+      touch::hwReset();
+      cfgOk = touch::configure();
+      touchArmed = cfgOk && touch::rdyIdleHigh();
+      if (!touchArmed)
+        Log.printf("touch: re-arm %d — cfg=%d RDY=%d\n", i, (int)cfgOk,
+                   digitalRead(TOUCH_RDY_GPIO));
+    }
   }
   rtcTouchReady = touchArmed ? 1 : 0;
   rtcLastCfgOk = cfgOk ? 1 : 0;      // stashed for the next boot to report
@@ -503,9 +507,9 @@ void setup() {
   // Report the previous sleep's touch re-arm outcome (its own logs were cut off by
   // the USB-CDC power-down). 0xFF = no prior sleep this power cycle.
   if (rtcLastArmed != 0xFF) {
-    Log.printf("touch: last re-arm cfgOk=%d armed=%d tries=%u (this wake %s)\n",
-               (int)rtcLastCfgOk, (int)rtcLastArmed, (unsigned)rtcLastCfgTries,
-               touchWake ? "IS ext0/touch" : "is timer/other");
+    Log.printf("touch: last re-arm fast=%d cfgOk=%d armed=%d tries=%u (this wake %s)\n",
+               (int)rtcLastFast, (int)rtcLastCfgOk, (int)rtcLastArmed,
+               (unsigned)rtcLastCfgTries, touchWake ? "IS ext0/touch" : "is timer/other");
   }
 
   // Shared sensor I2C bus (touch + fuel gauge). Begin once — the TRMNL X S3

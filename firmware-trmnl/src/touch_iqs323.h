@@ -45,6 +45,12 @@ Event readEvent();
 // configure() to re-stream config and return to event mode.
 bool swReset();
 
+// Fast-path re-arm check: true if the chip is already sitting in clean event mode
+// with our config intact (0x62 == streamed threshold, no SHOW_RESET, RDY idling HIGH),
+// so the caller can arm ext0 directly without a costly hwReset + reconfigure + ATI.
+// A display refresh leaves the chip this way, so this is the normal path.
+bool eventModeReady();
+
 // Hardware-reset the chip by pulsing its master-clear line (tied to RDY/GPIO3).
 // Needs no working I2C, so it recovers a chip whose comms have wedged (returning
 // 0xEE / RDY stuck low) — the case swReset() can't reach. Chip comes back streaming

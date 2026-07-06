@@ -128,6 +128,29 @@ bool swReset() {
   return ok;
 }
 
+// Fast-path health check for the sleep re-arm. A display refresh leaves the chip in
+// clean event mode with config intact (SHOW_RESET clear, 0x62 still holds our streamed
+// threshold), so the full hwReset + reconfigure + ATI we used to do on
+// EVERY sleep was unnecessary — and its ATI frequently failed on the just-powered
+// rail, which was the real source of the flakiness. Returns true only if the chip is
+// genuinely ready to arm ext0: config intact (0x62 == the streamed CH0 threshold), no
+// SHOW_RESET, and RDY idling HIGH continuously (event mode, not streaming). The RDY
+// sweep spans more than one scan period so a streaming chip (RDY pulsing low ~every
+// 40ms) can't be mistaken for armed — that would spin-wake ext0 and drain the battery.
+bool eventModeReady() {
+  Wire.setTimeOut(300);
+  uint8_t s[2] = {0, 0}, th[2] = {0, 0};
+  if (!readReg(MM_SYSTEM_STATUS, s, 2)) return false;
+  if (s[0] & ST0_SHOW_RESET) return false;              // chip reset -> reconfigure
+  if (!readReg(MM_CH0_TOUCH, th, 2)) return false;
+  if (th[0] != iqs323_cfg::CH0[4]) return false;        // config wiped -> reconfigure
+  for (int i = 0; i < 25; i++) {                        // ~75ms of continuous HIGH
+    if (digitalRead(TOUCH_RDY_GPIO) == LOW) return false;  // streaming / event pending
+    delay(3);
+  }
+  return true;
+}
+
 // Hardware-reset the IQS323 by pulsing its master-clear line. On this board MCLR is
 // tied to the RDY pin (GPIO3), so we briefly drive it LOW as an output, then return
 // it to a high-impedance input (the board pull-up restores RDY). Unlike swReset()
