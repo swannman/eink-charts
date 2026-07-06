@@ -68,11 +68,13 @@ constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
 
 // -----------------------------------------------------------------------------
 // Slideshow cadence. The device caches the whole multi-dashboard bundle and
-// advances through it locally on each short wake; it only re-fetches over
-// Wi-Fi every REFRESH_INTERVAL. A touch tap advances immediately.
+// advances through it locally on each timer wake; it only re-fetches over
+// Wi-Fi every REFRESH_INTERVAL. A touch tap advances immediately (from cache,
+// never over Wi-Fi). With a 45-minute dwell the refresh floor is <= the dwell,
+// so every timed advance pulls fresh data (each shown dashboard is <=45 min old).
 // -----------------------------------------------------------------------------
-constexpr uint64_t DWELL_SECONDS = 45;          // per-dashboard display time
-constexpr uint64_t REFRESH_INTERVAL_SECONDS = 600;  // Wi-Fi re-fetch floor
+constexpr uint64_t DWELL_SECONDS = 45 * 60;         // per-dashboard display time (45 min)
+constexpr uint64_t REFRESH_INTERVAL_SECONDS = 45 * 60;  // Wi-Fi re-fetch floor (each advance)
 
 // Wake on a touch-bar tap (ext0 on the IQS323 RDY line) to advance early.
 // touch::configure() puts the IQS323 in EVENT MODE so RDY only asserts on a real
