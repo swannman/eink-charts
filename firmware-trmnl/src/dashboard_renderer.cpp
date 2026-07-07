@@ -28,6 +28,9 @@ const uint8_t SERIES_GRAYS[] = {0, 6, 10, 3};
 constexpr int MAX_POINTS = 4096;
 constexpr int MAX_LABELS = 8;
 constexpr int MAX_BANDS = 8;
+// Largest anti-aliased glyph FastEPD renders without overflowing its internal
+// scratch buffer (bigger glyphs corrupt the adjacent gray-matrix pointers).
+constexpr int STAT_VALUE_MAX_PX = 40;
 
 float gPX[MAX_POINTS];
 float gPY[MAX_POINTS];
@@ -92,7 +95,11 @@ void renderStat(int px, int py, int pw, int ph, uint8_t base_gray, int sparkN) {
   char vu[48];
   const char* value = gValue[0] ? gValue : "-";
   snprintf(vu, sizeof(vu), "%s%s", value, gUnit);
-  int vtar = clampi((int)(ph * 0.30f), 24, 64);
+  // Cap at 40px: FastEPD's anti-aliased glyph renderer overflows an internal
+  // buffer (corrupting the adjacent gray-matrix pointers → a delayed heap crash
+  // on the next refresh) for glyphs larger than this. 40px is the largest size
+  // used elsewhere (titles/labels) and renders safely. See STAT_VALUE_MAX_PX.
+  int vtar = clampi((int)(ph * 0.30f), 24, STAT_VALUE_MAX_PX);
   int vpx = gfx4::fittedPx(vu, pw - 24, vtar);
   int vy = py + ph / 2 - vpx / 2;
   gfx4::drawTextCenteredFit(px, vy, pw, vpx, vu, GRAY_BLACK);

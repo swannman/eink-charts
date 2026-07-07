@@ -411,30 +411,16 @@ static void drawWaitingScreen() {
                             "Waiting for the first dashboard bundle...", GRAY_BLACK);
 }
 
-// A small lightning bolt (two stacked slanted spans) to mark "charging".
-static void drawBolt(int cx, int top, int h, uint8_t color) {
-  int seg = h / 2;
-  int w = h / 4;
-  if (w < 3) w = 3;
-  for (int i = 0; i < seg; i++)  // top-right → center
-    epd.fillRect(cx + w - (w * i) / seg, top + i, w, 1, color);
-  for (int i = 0; i < seg; i++)  // center → bottom-left
-    epd.fillRect(cx - (w * i) / seg, top + seg + i, w, 1, color);
-}
-
-// Draw the battery indicator in the top-right corner, over a white pad so it
-// stays legible on top of panel content. Shows a battery glyph filled to SOC
-// with the percentage beside it (or the voltage if the gauge hasn't settled),
-// plus a bolt when charging. Rendered in the same light gray as the y-axis tick
-// labels (dashboard_renderer's YAXIS_GRAY) so it frames rather than competes.
-// Call after render(), before present().
+// Draw the battery indicator in the top-right corner: just the SOC percentage
+// (or the voltage until the gauge settles), over a small white pad so it stays
+// legible on top of panel content. Rendered in the same light gray as the
+// y-axis tick labels (dashboard_renderer's YAXIS_GRAY) so it frames rather than
+// competes. Text only — no glyph, no charging bolt. Call after render(), before
+// present(). Uses only the (bounds-clipped) text + fillRect paths.
 static void drawBatteryBadge(const battery::Status& b) {
   if (!b.present) return;
   const uint8_t GRAY = 6;  // == dashboard_renderer::YAXIS_GRAY
-  const int margin = 14, bodyW = 78, bodyH = 34, nubW = 6, nubH = 16, outline = 3;
-  const int bodyRight = SCREEN_W - margin - nubW;
-  const int bodyLeft = bodyRight - bodyW;
-  const int top = margin;
+  const int margin = 14, labelPx = 30;
 
   char label[16];
   if (b.soc != 0xFF)
@@ -442,36 +428,16 @@ static void drawBatteryBadge(const battery::Status& b) {
   else
     snprintf(label, sizeof(label), "%u.%02uV", b.mv / 1000, (b.mv % 1000) / 10);
 
-  const int labelPx = 30;
   int labelW = gfx4::textWidth(label, labelPx);
-  int boltW = b.charging ? bodyH / 3 + 6 : 0;
-  int padLeft = bodyLeft - 12 - labelW - boltW - 10;
-  if (padLeft < 0) padLeft = 0;
-  epd.fillRect(padLeft, top - 6, SCREEN_W - padLeft, bodyH + 12, 15);  // white pad
+  int right = SCREEN_W - margin;
+  int left = right - labelW;
+  if (left < margin) left = margin;
 
-  // Battery body outline (multi-pass for thickness) + terminal nub. The shape
-  // primitives honor `color` directly (unlike the AA font), so gray goes on now.
-  for (int i = 0; i < outline; i++)
-    epd.drawRoundRect(bodyLeft + i, top + i, bodyW - 2 * i, bodyH - 2 * i, 5, GRAY);
-  epd.fillRect(bodyRight + 1, top + (bodyH - nubH) / 2, nubW, nubH, GRAY);
-
-  // Fill proportional to SOC (same gray — the empty white shows the level).
-  if (b.soc != 0xFF) {
-    int pad = outline + 3;
-    int innerW = bodyW - 2 * pad;
-    int fillW = (int)((long)innerW * b.soc / 100);
-    if (fillW > 0)
-      epd.fillRect(bodyLeft + pad, top + pad, fillW, bodyH - 2 * pad, GRAY);
-  }
-
-  // Percentage/voltage label to the left of the glyph. FastEPD's AA renderer
-  // always draws black, so draw it black then lighten the text box to GRAY —
-  // exactly how the y-axis labels get their shade.
-  int textRight = bodyLeft - 12;
-  gfx4::drawTextRightFit(textRight, top + 3, labelW + 8, labelPx, label, GRAY_BLACK);
-  gfx4::lightenToGray(textRight - labelW - 2, top, textRight + 2, top + labelPx + 6, GRAY);
-  if (b.charging)
-    drawBolt(textRight - labelW - 10, top + 3, bodyH - 6, GRAY);
+  // White pad behind the text, then draw black + lighten to GRAY (FastEPD's AA
+  // renderer ignores color) — exactly how the y-axis labels get their shade.
+  epd.fillRect(left - 8, margin - 6, SCREEN_W - (left - 8), labelPx + 12, 15);
+  gfx4::drawTextRightFit(right, margin, labelW + 8, labelPx, label, GRAY_BLACK);
+  gfx4::lightenToGray(left - 4, margin - 2, right + 2, margin + labelPx + 6, GRAY);
 }
 
 // Load dashboard `index`'s cached bundle and paint it. Each cached file holds a
