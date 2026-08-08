@@ -8,6 +8,8 @@
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "battery_e1004.h"
 #include "bundle_parser.h"
@@ -51,6 +53,59 @@ constexpr size_t MAX_SEALED_BYTES = 224 * 1024;
 
 // Manifest header magic (mirrors data_trmnl.MANIFEST_MAGIC).
 constexpr uint16_t MANIFEST_MAGIC = 0xCFB3;
+
+// ---- Local time / quiet hours -------------------------------------------------
+static bool getLocalNow(struct tm& out) {
+  time_t now = time(nullptr);
+  if (now < 1700000000) return false;  // clock never set
+  localtime_r(&now, &out);
+  return true;
+}
+
+static bool inQuietHours() {
+  struct tm lt;
+  if (!getLocalNow(lt)) return false;
+  return lt.tm_hour >= QUIET_HOURS_START || lt.tm_hour < QUIET_HOURS_END;
+}
+
+// Seconds from now until the next QUIET_HOURS_END boundary (06:00 local).
+static uint64_t secondsUntilQuietEnd() {
+  struct tm lt;
+  if (!getLocalNow(lt)) return 0;
+  struct tm target = lt;
+  target.tm_hour = QUIET_HOURS_END;
+  target.tm_min = 0;
+  target.tm_sec = 0;
+  time_t now = time(nullptr);
+  time_t end = mktime(&target);
+  if (end <= now) end += 24 * 3600;  // already past 6am today -> tomorrow
+  return (uint64_t)(end - now);
+}
+
+// Set the wall clock from an HTTP "Date" header (RFC 7231 fixed format:
+// "Sun, 06 Nov 1994 08:49:37 GMT"). Every Worker response carries it, so
+// syncing here is free — no NTP roundtrip. Mirrors firmware-cloud.
+static bool setClockFromHttpDate(const String& dateHdr) {
+  if (dateHdr.length() < 25) return false;
+  struct tm tm = {};
+  if (!strptime(dateHdr.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm)) return false;
+  // No timegm in newlib — temporarily switch TZ to UTC so mktime treats tm
+  // as a UTC moment, then restore.
+  String savedTz = getenv("TZ") ? getenv("TZ") : "";
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  time_t t = mktime(&tm);
+  if (savedTz.length() > 0) setenv("TZ", savedTz.c_str(), 1);
+  else unsetenv("TZ");
+  tzset();
+  if (t <= 1700000000) return false;
+  struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+  settimeofday(&tv, nullptr);
+  struct tm lt;
+  localtime_r(&t, &lt);
+  Log.printf("clock: set from HTTP Date -> local %02d:%02d\n", lt.tm_hour, lt.tm_min);
+  return true;
+}
 
 // ---- Task watchdog -----------------------------------------------------------
 #if ENABLE_WATCHDOG
@@ -234,8 +289,12 @@ static bool fetchManifest(const String& baseUrl, const String& bearer,
   if (http.begin(secure, url)) {
     http.addHeader("Authorization", "Bearer " + bearer);
     http.setUserAgent("einkcharts-e1004/1");
+    static const char* kHdrs[] = {"Date"};
+    http.collectHeaders(kHdrs, 1);
     int code = http.GET();
     Log.printf("manifest: GET -> %d\n", code);
+    // Any response carries a Date header — sync the wall clock (quiet hours).
+    if (code > 0 && http.hasHeader("Date")) setClockFromHttpDate(http.header("Date"));
     if (code == 200) {
       int n = http.getSize();
       const int maxN = 8 + 4 * MAX_DASH;
@@ -430,10 +489,19 @@ static void armButtonWake() {
 }
 
 static void goToSleep() {
-  esp_sleep_enable_timer_wakeup(DWELL_SECONDS * 1000000ULL);
+  uint64_t sleepSec = DWELL_SECONDS;
+  if (inQuietHours()) {
+    // Sleep straight through to 06:00 local instead of waking every dwell.
+    // Force a fetch on the morning wake so the first dashboard is fresh.
+    sleepSec = secondsUntilQuietEnd();
+    rtcWakesSinceFetch = FETCH_EVERY_N_WAKES;
+    Log.printf("quiet hours: sleeping %llus until %02d:00 local\n",
+               (unsigned long long)sleepSec, QUIET_HOURS_END);
+  }
+  esp_sleep_enable_timer_wakeup(sleepSec * 1000000ULL);
   display_e1004::sleep();
   armButtonWake();
-  Log.printf("deep sleep %llus\n", (unsigned long long)DWELL_SECONDS);
+  Log.printf("deep sleep %llus\n", (unsigned long long)sleepSec);
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -441,6 +509,10 @@ static void goToSleep() {
 void setup() {
   Serial.begin(115200);
   wdtBegin();
+  // TZ doesn't survive deep sleep but the RTC wall clock does — re-apply every
+  // wake so localtime()/quiet-hours math is in local time, not UTC.
+  setenv("TZ", LOCAL_TZ, 1);
+  tzset();
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   bool buttonWake = (cause == ESP_SLEEP_WAKEUP_EXT1 || cause == ESP_SLEEP_WAKEUP_EXT0);
   bool firstBoot = (rtcMagic != RTC_MAGIC_VALUE);
@@ -448,6 +520,22 @@ void setup() {
 
   Log.printf("\n=== E1004 boot wake=%d button=%d first=%d index=%u ===\n",
              (int)cause, (int)buttonWake, (int)firstBoot, (unsigned)rtcDashIndex);
+  {
+    struct tm lt;
+    if (getLocalNow(lt)) {
+      Log.printf("clock: local %02d:%02d%s\n", lt.tm_hour, lt.tm_min,
+                 inQuietHours() ? " (quiet hours)" : "");
+    }
+  }
+
+  // A timer wake during quiet hours does NO work — no display power-up, no
+  // Wi-Fi, no refresh — and goToSleep() puts us back down until 06:00. A
+  // button press still runs the full advance-from-cache cycle below.
+  if (!buttonWake && !firstBoot && inQuietHours()) {
+    Log.println("quiet hours: skipping timed advance");
+    goToSleep();
+    return;
+  }
 
   for (int8_t pin : {BTN_GREEN_GPIO, BTN_WHITE_RIGHT_GPIO, BTN_WHITE_LEFT_GPIO}) {
     if (pin >= 0) pinMode(pin, INPUT_PULLUP);

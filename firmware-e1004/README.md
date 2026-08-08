@@ -70,8 +70,14 @@ pio device monitor -b 115200
    `/manifest-e1004`, GET only the changed `/bundle-e1004?d=<i>` objects,
    decrypt, cache to LittleFS; best-effort PUT battery voltage to
    `/battery-e1004`.
-5. Render the current dashboard from cache and full-refresh the panel (~25 s).
-6. Deep sleep for `DWELL_SECONDS`, also waking on the green button.
+5. Render the current dashboard from cache and full-refresh the panel (~30 s).
+6. Deep sleep for `DWELL_SECONDS`, also waking on any front button.
+
+**Quiet hours (22:00–06:00 local)**: timer wakes do nothing — no display
+power-up, no Wi-Fi, no refresh — and the device sleeps straight through to
+06:00 (cuts ~⅓ of the daily refresh cycles). Button presses still advance
+from cache. The wall clock comes free from the Worker's HTTP `Date` header on
+each fetch; with no valid clock yet, quiet hours are skipped.
 
 ## Source layout
 

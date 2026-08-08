@@ -87,6 +87,18 @@ constexpr uint32_t HTTP_TIMEOUT_MS = 30000;
 constexpr uint64_t DWELL_SECONDS = 45 * 60;
 constexpr uint64_t REFRESH_INTERVAL_SECONDS = 45 * 60;
 
+// Quiet hours: skip the timed advance + refresh (and its Wi-Fi fetch)
+// overnight — at 32 cycles/day the ~30 s color refresh IS the battery, so
+// sleeping 22:00-06:00 cuts a third of them. A button press still wakes and
+// advances from cache. The wall clock is set from the Worker's HTTP Date
+// header on each fetch (no NTP roundtrip) and kept by the RTC across deep
+// sleep; without a valid clock (fresh flash, no fetch yet) quiet hours are
+// simply skipped. The first wake after 06:00 fetches fresh data.
+constexpr int QUIET_HOURS_START = 22;  // inclusive
+constexpr int QUIET_HOURS_END = 6;     // exclusive — wake-up time
+// POSIX TZ for Pacific, DST rules included (mirrors firmware-cloud).
+constexpr const char* LOCAL_TZ = "PST8PDT,M3.2.0/2,M11.1.0/2";
+
 // Demo mode: skip Wi-Fi + fetch, render a built-in stub bundle.
 #ifndef DEMO_MODE
 #define DEMO_MODE 0
