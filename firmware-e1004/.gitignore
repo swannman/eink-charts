@@ -1,0 +1,4 @@
+.pio/
+platformio.local.ini
+src/secrets.h
+*.bin

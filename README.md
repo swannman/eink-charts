@@ -73,6 +73,16 @@ format and the on-device renderer differ. See
 [`bridge-cloud/`](bridge-cloud/README.md). The X3 and TRMNL X run side by side,
 each with its own device key.
 
+## A third display: the reTerminal E1004 (color)
+
+A **Seeed reTerminal E1004** (13.3" 1200×1600 E Ink **Spectra 6 full color**,
+ESP32-S3) runs the same whole-dashboard slideshow as the TRMNL X, but in
+**color**: the bundle is stamped version 3, whose shade bytes carry Spectra 6
+color codes, so threshold zones render as light red/yellow/green bands and stat
+tiles tint by status (a pale dithered wash). Same bridge, same sealed-bundle
+crypto, its own Worker objects (`/bundle-e1004`) and device key. See
+[`firmware-e1004/`](firmware-e1004/README.md) and the `push_e1004` service.
+
 ## Subdirectories
 
 - **[`firmware-cloud/`](firmware-cloud/README.md)** — ESP32-C3 firmware for
@@ -83,6 +93,10 @@ each with its own device key.
   TRMNL X. FastEPD 4-bit grayscale, whole-dashboard grid rendering scaled to
   fill the screen, threshold-to-gray status shading, auto-rotating slideshow
   with touch-to-advance. Wi-Fi only; same X25519+AES-256-GCM decrypt as the X3.
+- **[`firmware-e1004/`](firmware-e1004/README.md)** — ESP32-S3 firmware for the
+  reTerminal E1004. Seeed_GFX/T133A01 Spectra 6 color rendering (dithered
+  threshold bands, status-tinted stat tiles), button-to-advance slideshow,
+  same sealed-bundle pipeline with the v3 color wire format.
 - **[`bridge-cloud/`](bridge-cloud/README.md)** — push-only service that
   runs on a Raspberry Pi. Queries Grafana, builds the binary bundle, seals
   it for the X3, uploads to the Cloudflare Worker every 4 minutes via a

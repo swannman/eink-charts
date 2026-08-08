@@ -1,0 +1,8 @@
+# reTerminal E1004 partition table. 32 MB flash. App at the standard 0x10000
+# offset (where the pioarduino uploader writes it). NVS holds keys/wifi/etags;
+# the big "storage" LittleFS partition caches the per-dashboard sealed bundles.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xF000,   0x1000,
+factory,  app,  factory, 0x10000,  0x3F0000,
+storage,  data, littlefs,0x400000, 0x1C00000,

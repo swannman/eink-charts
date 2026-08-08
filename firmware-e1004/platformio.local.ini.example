@@ -1,0 +1,5 @@
+; Copy to platformio.local.ini (gitignored) to override the serial port etc.
+; without touching the tracked platformio.ini.
+[env:e1004]
+; upload_port = /dev/cu.wchusbserial1140
+; monitor_port = /dev/cu.wchusbserial1140
