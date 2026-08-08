@@ -1,0 +1,14 @@
+[Unit]
+Description=Push encrypted reTerminal E1004 color dashboard bundle every 5 minutes
+
+[Timer]
+# Offset from the X3 (0s) and TRMNL (90s) timers so the three pushes don't
+# hammer Grafana at the same instant.
+OnBootSec=150s
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=grafana-push-e1004.service
+
+[Install]
+WantedBy=timers.target

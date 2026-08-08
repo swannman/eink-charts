@@ -24,7 +24,10 @@ from .data_trmnl import (
     GRAY_WHITE,
     PANEL_STAT,
     PANEL_TIMESERIES,
+    SPECTRA_WHITE,
     active_threshold_gray,
+    active_threshold_spectra,
+    band_spectra_for_color,
     bands_from_steps,
 )
 from .scheduler import FrameStore, Scheduler
@@ -103,13 +106,21 @@ async def build_dashboards(
     from_default: str = "now-7d",
     to: str = "now",
     tz: str = "America/Los_Angeles",
+    palette: str = "gray",
 ) -> list[dict[str, Any]]:
     """Resolve the folder into the list of dashboard dicts the encoder wants.
 
     Each dashboard's own saved Grafana time range wins over ``from_default``, so
     you can set a dashboard's history window in Grafana (e.g. 30d for a slow
     trend, 6h for a live one) with no redeploy; per-panel ``timeFrom`` overrides
-    still win within a dashboard."""
+    still win within a dashboard.
+
+    ``palette`` selects how threshold colours land in the shade bytes:
+    ``"gray"`` (TRMNL X, v2 bundle) maps them to 0..15 grays; ``"spectra"``
+    (reTerminal E1004, v3 bundle) maps them to Spectra 6 color codes."""
+    spectra = palette == "spectra"
+    shade_none = SPECTRA_WHITE if spectra else GRAY_WHITE
+    stat_shade = active_threshold_spectra if spectra else active_threshold_gray
     sched = Scheduler(config, token, FrameStore())
     entries = await list_folder_dashboards(client, config.grafana_url, token, folder_uid)
     if not entries:
@@ -163,7 +174,7 @@ async def build_dashboards(
                 panel_dicts.append({
                     **common,
                     "type": PANEL_STAT,
-                    "base_gray": active_threshold_gray(pc.threshold_steps, value),
+                    "base_gray": stat_shade(pc.threshold_steps, value),
                     "value_str": stat["value_str"],
                     "sparkline": stat["sparkline"],
                 })
@@ -175,16 +186,19 @@ async def build_dashboards(
                 # ("area", "line+area", "dashed+area", "fillbands"); line-only or
                 # off styles stay clean so the chart reads well on e-ink.
                 style = pc.thresholds_style or ""
-                bands = (
-                    bands_from_steps(pc.threshold_steps, axis_min, axis_max)
-                    if ("area" in style or style == "fillbands")
-                    else []
-                )
+                if "area" in style or style == "fillbands":
+                    bands = bands_from_steps(
+                        pc.threshold_steps, axis_min, axis_max,
+                        **({"shade": band_spectra_for_color,
+                            "none_value": SPECTRA_WHITE} if spectra else {}),
+                    )
+                else:
+                    bands = []
                 series_pts = [s.get("points") or [] for s in (data.get("series") or [])]
                 panel_dicts.append({
                     **common,
                     "type": PANEL_TIMESERIES,
-                    "base_gray": GRAY_WHITE,
+                    "base_gray": shade_none,
                     "y_labels": y_axis.get("labels") or [],
                     # Normalized (0=bottom..1=top) position of each y label, so
                     # the device draws them where Grafana does instead of evenly.

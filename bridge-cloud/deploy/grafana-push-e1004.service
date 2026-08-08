@@ -1,0 +1,21 @@
+[Unit]
+Description=Push encrypted reTerminal E1004 color dashboard bundle to Cloudflare Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=grafana-push
+Group=grafana-push
+# GRAFANA_TOKEN + GRAFANA_BRIDGE_CONFIG come from the legacy env file.
+# WORKER_BEARER_TOKEN + E1004_PUBKEY_B64 (+ optional E1004_* overrides) come
+# from the push-specific env file, shared with the X3/TRMNL push services.
+EnvironmentFile=/etc/default/grafana-bridge
+EnvironmentFile=-/etc/default/grafana-push
+WorkingDirectory=/opt/grafana-push
+ExecStart=/opt/grafana-push/.venv/bin/python -m grafana_push.push_e1004
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

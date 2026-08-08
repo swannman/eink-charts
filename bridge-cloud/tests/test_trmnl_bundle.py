@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from grafana_push.data_trmnl import (
+    BAND_GRAY_OK,
     BAND_GRAY_ALERT,
     BAND_GRAY_WARN,
     GRAY_WHITE,
@@ -37,14 +38,16 @@ def test_gray_for_color_names_and_hex() -> None:
 
 
 def test_band_gray_for_color_red_vs_yellow() -> None:
-    # In-range green draws no fill; red and yellow get distinct light shades.
-    assert band_gray_for_color("rgba(0, 200, 0, 0.1)") == GRAY_WHITE
-    assert band_gray_for_color("green") == GRAY_WHITE
+    # In-range green gets the faintest band; red and yellow get distinct
+    # stronger shades; only white/transparent draws nothing.
+    assert band_gray_for_color("rgba(0, 200, 0, 0.1)") == BAND_GRAY_OK
+    assert band_gray_for_color("green") == BAND_GRAY_OK
+    assert band_gray_for_color("transparent") == GRAY_WHITE
     assert band_gray_for_color("rgba(255, 0, 0, 0.1)") == BAND_GRAY_ALERT
     assert band_gray_for_color("red") == BAND_GRAY_ALERT
     assert band_gray_for_color("rgba(255, 255, 0, 1)") == BAND_GRAY_WARN
     assert band_gray_for_color("yellow") == BAND_GRAY_WARN
-    assert BAND_GRAY_ALERT != BAND_GRAY_WARN   # red and yellow are different
+    assert len({BAND_GRAY_ALERT, BAND_GRAY_WARN, BAND_GRAY_OK}) == 3
 
 
 def test_active_threshold_gray_picks_band() -> None:
@@ -58,16 +61,16 @@ def test_active_threshold_gray_picks_band() -> None:
 
 
 def test_bands_from_steps_cold_chain() -> None:
-    # fridge: red below 33, green 33-38, red above; axis 31..40. The in-range
-    # (green) middle draws NO band, leaving two red out-of-range bands.
+    # fridge: red below 33, green 33-38, red above; axis 31..40. All three
+    # zones render — the in-range (green) middle as the faintest band.
     steps = [(None, "red"), (0.0, "red"), (33.0, "green"), (38.0, "red")]
     bands = bands_from_steps(steps, 31.0, 40.0)
-    assert len(bands) == 2
+    assert len(bands) == 3
     assert bands[0][0] == 0.0                       # low red band starts at axis min
     assert abs(bands[-1][1] - 1.0) < 1e-6           # high red band reaches the top
-    assert all(g == BAND_GRAY_ALERT for _, _, g in bands)
-    # the clean gap between the two red bands is the in-range zone
-    assert bands[0][1] < bands[1][0]
+    assert bands[0][2] == BAND_GRAY_ALERT
+    assert bands[1][2] == BAND_GRAY_OK              # in-range zone, faintest
+    assert bands[2][2] == BAND_GRAY_ALERT
 
 
 def test_bands_from_steps_base_below_axis_min() -> None:
@@ -77,12 +80,14 @@ def test_bands_from_steps_base_below_axis_min() -> None:
     # value equals the next step's.
     steps = [(0.0, "rgba(255,0,0,0.1)"), (0.0, "rgba(0,200,0,0.1)"), (10.0, "rgba(255,0,0,0.1)")]
     bands = bands_from_steps(steps, -5.0, 15.0)
-    assert len(bands) == 2                              # bottom red + top red
+    assert len(bands) == 3                              # red + green middle + red
     assert bands[0][0] == 0.0                           # bottom band starts at axis min (-5)
     assert abs(bands[0][1] - 0.25) < 1e-4               # up to value 0
-    assert abs(bands[1][0] - 0.75) < 1e-4               # top band from value 10
+    assert abs(bands[2][0] - 0.75) < 1e-4               # top band from value 10
     assert abs(bands[-1][1] - 1.0) < 1e-4
-    assert all(g == BAND_GRAY_ALERT for _, _, g in bands)
+    assert bands[0][2] == BAND_GRAY_ALERT
+    assert bands[1][2] == BAND_GRAY_OK
+    assert bands[2][2] == BAND_GRAY_ALERT
 
 
 def test_bands_from_steps_rgba_and_unsorted() -> None:
@@ -92,12 +97,14 @@ def test_bands_from_steps_rgba_and_unsorted() -> None:
     # would wrongly make green the base and drop the below--8 red band.
     steps = [(0.0, "rgba(255,0,0,0.1)"), (-8.0, "rgba(0,200,0,0.1)"), (4.0, "rgba(255,0,0,0.1)")]
     bands = bands_from_steps(steps, -10.0, 10.0)
-    assert len(bands) == 2                       # below--8 red + above-4 red
+    assert len(bands) == 3                       # red + in-range green + red
     assert bands[0][0] == 0.0                    # bottom band starts at axis min
     assert abs(bands[0][1] - 0.1) < 1e-4         # up to value -8
-    assert abs(bands[1][0] - 0.7) < 1e-4         # top band from value 4
+    assert abs(bands[2][0] - 0.7) < 1e-4         # top band from value 4
     assert abs(bands[-1][1] - 1.0) < 1e-4
-    assert all(g == BAND_GRAY_ALERT for _, _, g in bands)
+    assert bands[0][2] == BAND_GRAY_ALERT
+    assert bands[1][2] == BAND_GRAY_OK
+    assert bands[2][2] == BAND_GRAY_ALERT
     assert bands == sorted(bands)
 
 

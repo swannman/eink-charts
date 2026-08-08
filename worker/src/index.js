@@ -31,6 +31,15 @@ const BATTERY_TRMNL_KEY = "battery_history_trmnl";
 // overflow defense.
 const CAPACITY_TRMNL_KEY = "capacity_trmnl";
 
+// The reTerminal E1004 (13.3" Spectra 6 color panel) is a third device with the
+// same per-dashboard object + manifest + capacity + battery shape as the TRMNL
+// X, under its own keys. Its bundles are version-3 "color bundles" — same
+// sealed transport, the Worker neither knows nor cares.
+const BUNDLE_E1004_KEY = "bundle_e1004";       // + "_<index>"
+const MANIFEST_E1004_KEY = "manifest_e1004";
+const BATTERY_E1004_KEY = "battery_history_e1004";
+const CAPACITY_E1004_KEY = "capacity_e1004";
+
 export default {
   async fetch(request, env) {
     const auth = request.headers.get("Authorization") ?? "";
@@ -49,8 +58,18 @@ export default {
     }
     if (url.pathname === "/manifest-trmnl") return handleBundle(request, env, MANIFEST_TRMNL_KEY);
     if (url.pathname === "/capacity-trmnl") return handleCapacity(request, env, CAPACITY_TRMNL_KEY);
+    if (url.pathname === "/bundle-e1004") {
+      const d = parseInt(url.searchParams.get("d") ?? "", 10);
+      if (!Number.isInteger(d) || d < 0 || d > 63) {
+        return new Response("missing/invalid ?d (0-63)", { status: 400 });
+      }
+      return handleBundle(request, env, `${BUNDLE_E1004_KEY}_${d}`, CAPACITY_E1004_KEY);
+    }
+    if (url.pathname === "/manifest-e1004") return handleBundle(request, env, MANIFEST_E1004_KEY);
+    if (url.pathname === "/capacity-e1004") return handleCapacity(request, env, CAPACITY_E1004_KEY);
     if (url.pathname === "/battery") return handleBattery(request, env, BATTERY_KEY);
     if (url.pathname === "/battery-trmnl") return handleBattery(request, env, BATTERY_TRMNL_KEY);
+    if (url.pathname === "/battery-e1004") return handleBattery(request, env, BATTERY_E1004_KEY);
     return new Response("not found", { status: 404 });
   },
 };

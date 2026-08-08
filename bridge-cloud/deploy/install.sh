@@ -73,6 +73,8 @@ install -m 0644 "$SRC/deploy/grafana-push.service"       /etc/systemd/system/gra
 install -m 0644 "$SRC/deploy/grafana-push.timer"         /etc/systemd/system/grafana-push.timer
 install -m 0644 "$SRC/deploy/grafana-push-trmnl.service" /etc/systemd/system/grafana-push-trmnl.service
 install -m 0644 "$SRC/deploy/grafana-push-trmnl.timer"   /etc/systemd/system/grafana-push-trmnl.timer
+install -m 0644 "$SRC/deploy/grafana-push-e1004.service" /etc/systemd/system/grafana-push-e1004.service
+install -m 0644 "$SRC/deploy/grafana-push-e1004.timer"   /etc/systemd/system/grafana-push-e1004.timer
 systemctl daemon-reload
 systemctl enable --now grafana-push.timer
 systemctl enable --now grafana-push-trmnl.timer

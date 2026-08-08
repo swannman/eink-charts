@@ -29,6 +29,15 @@ can't decrypt.
 Battery readings are plaintext voltages (no privacy concern) but still
 bearer-token-gated to keep randos out.
 
+**TRMNL X + reTerminal E1004 endpoints** — the two dashboard-slideshow
+devices get the same shape, one namespace each: per-dashboard sealed
+objects (`/bundle-trmnl?d=<i>`, `/bundle-e1004?d=<i>`), a compact manifest
+the device reads first to skip unchanged downloads (`/manifest-trmnl`,
+`/manifest-e1004`), the last capacity the device advertised, which the Pi
+reads to size the next bundle (`/capacity-trmnl`, `/capacity-e1004`), and
+battery telemetry (`/battery-trmnl`, `/battery-e1004`). The E1004's
+objects carry the v3 *color* bundle; the Worker neither knows nor cares.
+
 All endpoints require `Authorization: Bearer <BEARER_TOKEN>`.
 
 ## Deploy

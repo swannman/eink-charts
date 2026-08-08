@@ -44,6 +44,13 @@ from typing import Any
 BUNDLE_MAGIC = 0xCFB2
 BUNDLE_VERSION = 2   # v2: y labels carry a u16 normalized position (Grafana axis)
 
+# v3 — the "color bundle" for the reTerminal E1004 (E Ink Spectra 6). The wire
+# STRUCTURE is byte-for-byte identical to v2; only the meaning of the shade
+# bytes changes: everywhere v2 carries a 0..15 gray, v3 carries a Spectra 6
+# color code (SPECTRA_* below). A device therefore keys its interpretation off
+# the header version alone.
+BUNDLE_VERSION_COLOR = 3
+
 # Slideshow manifest: a tiny sidecar the device fetches first so it knows how
 # many per-dashboard bundles exist and which changed since last time (so it only
 # re-downloads what moved). Distinct magic from the bundle itself.
@@ -125,34 +132,112 @@ def gray_for_color(color: str | None) -> int:
 
 
 # Very light band shades for threshold zones (0=black .. 15=white, so higher =
-# lighter). In-range (green) draws NO fill so the "good" region reads as blank;
-# out-of-range zones get a faint tint — red slightly stronger than yellow — so
-# it's clear when the line leaves the desired range without the band competing
-# with the plotted line. Kept near-white on purpose (~1-2 levels of darkness).
+# lighter). In-range (green) gets the faintest tint — it marks the "good"
+# region without competing with the line; out-of-range zones get a slightly
+# stronger tint, red stronger than yellow. Only white/transparent draws
+# nothing. Kept near-white on purpose (~1-2 levels of darkness).
 BAND_GRAY_ALERT = 12   # red / danger  (kept one step darker than warn)
 BAND_GRAY_WARN = 13    # yellow / orange (slightly darker than the old 14)
+BAND_GRAY_OK = 14      # green / in-range (the faintest visible band)
 
 
 def band_gray_for_color(color: str | None) -> int:
-    """Gray for a threshold *band*: GRAY_WHITE (no fill) for in-range/green,
-    a light shade for out-of-range warm colours."""
+    """Gray for a threshold *band*: GRAY_WHITE (no fill) only for
+    white/transparent; green in-range zones get the faintest gray so the good
+    region reads as a marked band (the color device draws it green)."""
     rgb = _parse_rgb(color)
     if rgb is not None:
         r, g, b = rgb
         if g > r and g > b:
-            return GRAY_WHITE                 # green / in-range -> clean
+            return BAND_GRAY_OK               # green / in-range
         if r >= 150 and g >= 120:
             return BAND_GRAY_WARN             # yellow / orange
         return BAND_GRAY_ALERT                # red / danger
     c = (color or "").strip().lower()
-    if "green" in c or c in ("", "none", "transparent", "text"):
+    if c in ("", "none", "transparent", "text"):
         return GRAY_WHITE
+    if "green" in c:
+        return BAND_GRAY_OK
     if "yellow" in c or "gold" in c or "orange" in c:
         return BAND_GRAY_WARN
     if "red" in c:
         return BAND_GRAY_ALERT
     g = gray_for_color(color)
     return g if g < GRAY_WHITE else GRAY_WHITE
+
+
+# -----------------------------------------------------------------------------
+# Spectra 6 palette (v3 color bundle). Codes are what the E1004 firmware's
+# renderer switches on; WHITE doubles as "none" exactly like GRAY_WHITE does in
+# the gray bundle (no tint / no band).
+# -----------------------------------------------------------------------------
+SPECTRA_BLACK = 0
+SPECTRA_WHITE = 1
+SPECTRA_RED = 2
+SPECTRA_YELLOW = 3
+SPECTRA_GREEN = 4
+SPECTRA_BLUE = 5
+
+_SPECTRA_NAMES: dict[str, int] = {
+    "red": SPECTRA_RED,
+    "dark-red": SPECTRA_RED,
+    "orange": SPECTRA_YELLOW,   # no orange on Spectra 6; warn-tier -> yellow
+    "dark-orange": SPECTRA_YELLOW,
+    "yellow": SPECTRA_YELLOW,
+    "gold": SPECTRA_YELLOW,
+    "#eab839": SPECTRA_YELLOW,  # Grafana's classic gold hex
+    "green": SPECTRA_GREEN,
+    "dark-green": SPECTRA_GREEN,
+    "blue": SPECTRA_BLUE,
+    "dark-blue": SPECTRA_BLUE,
+    "light-blue": SPECTRA_BLUE,
+    "purple": SPECTRA_BLUE,     # nearest hue the panel can show
+    "text": SPECTRA_BLACK,
+    "transparent": SPECTRA_WHITE,
+    "": SPECTRA_WHITE,
+    "none": SPECTRA_WHITE,
+}
+
+
+def spectra_for_color(color: str | None) -> int:
+    """Map a Grafana colour token (name, hex, or rgb/rgba) to a Spectra 6 code.
+    Hue wins over lightness: a hex like #c4162a lands on RED, not a gray."""
+    if not color:
+        return SPECTRA_WHITE
+    c = color.strip().lower()
+    if c in _SPECTRA_NAMES:
+        return _SPECTRA_NAMES[c]
+    rgb = _parse_rgb(c)
+    if rgb is not None:
+        r, g, b = rgb
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        if lum < 40:
+            return SPECTRA_BLACK
+        if lum > 225 and max(r, g, b) - min(r, g, b) < 30:
+            return SPECTRA_WHITE
+        # Dominant-hue vote. Yellow = red+green both high relative to blue.
+        if r >= 140 and g >= 110 and b < min(r, g) * 0.7:
+            return SPECTRA_YELLOW
+        if r >= g and r >= b:
+            return SPECTRA_RED
+        if g >= b:
+            return SPECTRA_GREEN
+        return SPECTRA_BLUE
+    for base, code in (("red", SPECTRA_RED), ("orange", SPECTRA_YELLOW),
+                       ("yellow", SPECTRA_YELLOW), ("green", SPECTRA_GREEN),
+                       ("blue", SPECTRA_BLUE), ("purple", SPECTRA_BLUE)):
+        if base in c:
+            return code
+    return SPECTRA_WHITE
+
+
+def band_spectra_for_color(color: str | None) -> int:
+    """Spectra code for a threshold *band*. Unlike the gray bundle (which skips
+    in-range/green so the good region stays clean), the color device renders
+    EVERY colored zone as a light dithered tint of its real hue — matching how
+    Grafana's "area" thresholdsStyle paints all zones, green included. Only
+    white/transparent draws nothing."""
+    return spectra_for_color(color)
 
 
 def _active_threshold_color(steps: list[tuple[float | None, str]], value: float) -> str:
@@ -178,10 +263,20 @@ def active_threshold_gray(steps: list[tuple[float | None, str]], value: float | 
     return gray_for_color(_active_threshold_color(steps, value))
 
 
+def active_threshold_spectra(steps: list[tuple[float | None, str]], value: float | None) -> int:
+    """Spectra 6 code of the threshold step a stat value falls in (v3 bundle)."""
+    if not steps or value is None:
+        return SPECTRA_WHITE
+    return spectra_for_color(_active_threshold_color(steps, value))
+
+
 def bands_from_steps(
     steps: list[tuple[float | None, str]],
     axis_min: float,
     axis_max: float,
+    *,
+    shade: Any = None,
+    none_value: int = GRAY_WHITE,
 ) -> list[tuple[float, float, int]]:
     """Convert absolute threshold steps into normalized [0,1] fill bands for a
     timeseries panel (dashboards whose thresholdsStyle shows an area).
@@ -191,7 +286,13 @@ def bands_from_steps(
     midpoint (via :func:`_active_threshold_color`) — so an out-of-array-order or
     real-valued base (e.g. a freezer's ``red`` base at 0 with the axis reaching
     below 0) yields exactly the zones Grafana draws. In-range/green draws
-    nothing. Returns (y0_norm, y1_norm, gray), y measured bottom-up."""
+    nothing. Returns (y0_norm, y1_norm, shade_byte), y measured bottom-up.
+
+    ``shade`` maps a Grafana colour to the band's shade byte (default: the gray
+    mapping); a result equal to ``none_value`` draws no band. The v3 color
+    bundle passes ``shade=band_spectra_for_color, none_value=SPECTRA_WHITE``."""
+    if shade is None:
+        shade = band_gray_for_color
     if not steps or axis_max <= axis_min:
         return []
     rng = axis_max - axis_min
@@ -206,8 +307,8 @@ def bands_from_steps(
         lo, hi = ordered[i], ordered[i + 1]
         if hi <= lo:
             continue
-        gray = band_gray_for_color(_active_threshold_color(steps, (lo + hi) / 2.0))
-        if gray >= GRAY_WHITE:
+        gray = shade(_active_threshold_color(steps, (lo + hi) / 2.0))
+        if gray == none_value:
             continue  # in-range / green draws no fill
         y0n = (lo - axis_min) / rng
         y1n = (hi - axis_min) / rng
@@ -342,7 +443,8 @@ def _max_series_points(dashboards: list[dict[str, Any]]) -> int:
 
 
 def encode_dashboard_bundle_fit(
-    dashboards: list[dict[str, Any]], next_poll: int, budget: int
+    dashboards: list[dict[str, Any]], next_poll: int, budget: int,
+    version: int = BUNDLE_VERSION,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """Encode the bundle, scaling chart resolution down so the result fits within
     ``budget`` plaintext bytes (the capacity the device advertised). This is the
@@ -351,7 +453,7 @@ def encode_dashboard_bundle_fit(
 
     Returns ``(body, etag, info)`` where ``info`` describes what happened
     (``downsampled``, ``kept_points``, ``size``, ``budget``)."""
-    body, etag = encode_dashboard_bundle(dashboards, next_poll)
+    body, etag = encode_dashboard_bundle(dashboards, next_poll, version)
     if budget <= 0 or len(body) <= budget:
         return body, etag, {
             "downsampled": False, "size": len(body), "budget": budget,
@@ -365,7 +467,7 @@ def encode_dashboard_bundle_fit(
     best_body, best_etag, best_keep = None, None, None
     while lo <= hi:
         mid = (lo + hi) // 2
-        cand_body, cand_etag = encode_dashboard_bundle(_cap_series_points(dashboards, mid), next_poll)
+        cand_body, cand_etag = encode_dashboard_bundle(_cap_series_points(dashboards, mid), next_poll, version)
         if len(cand_body) <= budget:
             best_body, best_etag, best_keep = cand_body, cand_etag, mid
             lo = mid + 1
@@ -375,7 +477,7 @@ def encode_dashboard_bundle_fit(
     if best_body is None:
         # Even 2 points/series overflows (many panels, tiny budget). Emit the
         # floor; the device's own MAX_SEALED check is the last backstop.
-        best_body, best_etag = encode_dashboard_bundle(_cap_series_points(dashboards, 2), next_poll)
+        best_body, best_etag = encode_dashboard_bundle(_cap_series_points(dashboards, 2), next_poll, version)
         best_keep = 2
     return best_body, best_etag, {
         "downsampled": True, "size": len(best_body), "budget": budget,
@@ -384,14 +486,17 @@ def encode_dashboard_bundle_fit(
 
 
 def encode_dashboard_bundle(
-    dashboards: list[dict[str, Any]], next_poll: int
+    dashboards: list[dict[str, Any]], next_poll: int,
+    version: int = BUNDLE_VERSION,
 ) -> tuple[bytes, str]:
     """Encode the 0xCFB2 dashboard bundle. ``dashboards`` is a list of
     ``{title, grid_cols, grid_rows, panels: [...]}`` dicts (see module docstring
-    for the per-panel fields). Returns (body, etag)."""
+    for the per-panel fields). Returns (body, etag). ``version`` stamps the
+    header: 2 = gray shades (TRMNL X), 3 = Spectra 6 color codes (E1004); the
+    byte layout is identical either way."""
     n = len(dashboards)
     buf = bytearray()
-    buf += struct.pack("<HBBI", BUNDLE_MAGIC, BUNDLE_VERSION, n, next_poll)
+    buf += struct.pack("<HBBI", BUNDLE_MAGIC, version, n, next_poll)
     table_pos = len(buf)
     buf += b"\x00" * (4 * n)
     offsets: list[int] = []
@@ -522,7 +627,7 @@ def decode_dashboard_bundle(body: bytes) -> dict[str, Any]:
     next_poll = r.u32()
     if magic != BUNDLE_MAGIC:
         raise ValueError(f"bad magic 0x{magic:04x}")
-    if version != BUNDLE_VERSION:
+    if version not in (BUNDLE_VERSION, BUNDLE_VERSION_COLOR):
         raise ValueError(f"unsupported version {version}")
     offsets = [r.u32() for _ in range(count)]
     dashboards = []
